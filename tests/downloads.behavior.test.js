@@ -144,3 +144,24 @@ test('10. exact size known: off-by-one is rejected (no 95% tolerance)', async ()
   await waitFor(() => ['failed', 'done'].includes(m.getState('brain').status), 20000, 'finished');
   assert.strictEqual(m.getState('brain').status, 'failed');
 });
+
+test('11. cancel reports freedBytes = partial size, and the UI event carries it (Ali verdict 2026-10-17)', async () => {
+  const t = fileTool('brain', 6_000_000, 11);
+  const root = env({ [t.url]: { size: t.sizeBytes, seed: 11, bps: 100000 } });
+  const m = await mgr(root); await m.addDownload(t);
+  await waitFor(() => m.getState('brain').progress > 0.05, 20000, 'progress');
+  await m.pause('brain'); // freeze the partial file so its size is deterministic
+  await waitFor(() => m.getState('brain').status === 'paused', 5000, 'paused');
+  const partialPath = path.join(root, '.staging', 'downloads', 'brain.bin');
+  const ctlPath = partialPath + '.aria2';
+  // freedBytes counts everything cancel deletes: the partial file AND its .aria2 control file.
+  const partialSize = fs.statSync(partialPath).size + (has(ctlPath) ? fs.statSync(ctlPath).size : 0);
+  assert.ok(partialSize > 0, 'partial file must have grown, got ' + partialSize);
+  const r = await m.cancel('brain');
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.freedBytes, partialSize, 'freedBytes must equal the partial file size that was deleted');
+  assert.ok(!has(partialPath), 'partial file must be gone after cancel');
+  const ev = m.events.filter(([type, d]) => type === 'state' && d.toolId === 'brain' && d.state === 'cancelled').pop();
+  assert.ok(ev, 'a cancelled state event must reach the UI');
+  assert.strictEqual(ev[1].freedBytes, partialSize, 'UI event must carry the same freedBytes value');
+});
