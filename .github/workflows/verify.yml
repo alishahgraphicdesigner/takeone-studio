@@ -55,7 +55,7 @@ jobs:
             if (-not (Test-Path $f)) { throw "Missing $f — the installer cannot be built without it." }
           }
           node build/make-readme.js
-          npx electron-builder --win nsis
+          npx electron-builder --win nsis --publish never
           $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $exe = "dist/TakeOne-Studio-$v-setup.exe"
           if (-not (Test-Path $exe)) { Get-ChildItem dist; throw "Expected $exe. The installer name must carry the version ($v): unique-version rule." }
