@@ -26,6 +26,17 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y aria2
           ARIA2C="$(which aria2c)" node --test tests/downloads.real-aria2.test.js
+      - name: Evidence fingerprint
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Evidence fingerprint"
+            echo "commit: $GITHUB_SHA"
+            echo '```'
+            git ls-files main.js package.json main tests tools .github | xargs sha256sum
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   windows-installer:
     runs-on: windows-latest
