@@ -65,7 +65,7 @@ async function pipWorks(root) {
   return r.ok;
 }
 
-async function ensurePip(root, onProgress) {
+async function ensurePip(root, onProgress, onCancel) {
   if (await pipWorks(root)) return { ok: true, already: true };
   if (onProgress) onProgress({ phase: 'preparing' });
   const r = await runPython(root, ['-m', 'ensurepip', '--upgrade'], (f) => {
@@ -76,7 +76,7 @@ async function ensurePip(root, onProgress) {
 
 /** One-click pip install of a package. Progress → onProgress. */
 async function pipInstall(root, pkg, onProgress, onCancel) {
-  const prep = await ensurePip(root, onProgress);
+  const prep = await ensurePip(root, onProgress, onCancel);
   if (!prep.ok) return { ok: false, error: 'Could not prepare the installer.' };
   if (onProgress) onProgress({ phase: 'installing', fraction: 0 });
   const r = await runPython(root,

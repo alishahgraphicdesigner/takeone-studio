@@ -37,6 +37,7 @@ const catalogMod = require('./main/catalog.js');
 try { global.__takeoneLog && global.__takeoneLog('REQ catalog OK'); } catch {}
 const dlMod = require('./main/downloads.js');
 const depsMod = require('./main/deps.js');
+const { hfInstalledStatus } = require('./main/hf-install-check.js');
 // Phase C modules.
 const libMod = require('./main/library.js');
 const pipeMod = require('./main/pipeline.js');
@@ -625,9 +626,9 @@ async function toolInstalled(root, tool) {
       return st.size > 0;
     }
     if (tool.installType === 'hf') {
+      // Byte-exact manifest check: a half-downloaded job must NOT read as installed.
       const d = path.join(toolDestDir(root, tool), tool.id);
-      const entries = await fsp.readdir(d);
-      return entries.length > 0;
+      return (await hfInstalledStatus(d, tool.files)).complete;
     }
     const st = await readToolStatus(root);
     return st[tool.id] && st[tool.id].status === 'installed';

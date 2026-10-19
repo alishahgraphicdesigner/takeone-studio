@@ -22,6 +22,8 @@ jobs:
       - run: npm test
       - name: Download manager logic tests (simulated aria2c)
         run: chmod +x tests/mock-aria2c.js && node --test tests/downloads.behavior.test.js
+      - name: HF install-check + ensurePip regression tests
+        run: node --test tests/hf-install-check.test.js tests/deps-ensurepip.test.js
       - name: Download manager vs REAL aria2c (local server)
         run: |
           sudo apt-get update && sudo apt-get install -y aria2
@@ -124,6 +126,7 @@ jobs:
       fail-fast: false
       matrix:
         pkg: ['chatterbox-tts==0.1.7', 'faster-whisper==1.2.1', 'demucs==4.1.0', 'deepfilternet==0.5.6', 'lama-cleaner==1.2.5']
+        variant: ['plain', 'cu128']
     steps:
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
@@ -132,10 +135,22 @@ jobs:
         run: |
           python -m venv venv
           function Size($p) { (Get-ChildItem $p -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum }
+          if ("${{ matrix.variant }}" -eq "cu128") {
+            .\venv\Scripts\python -m pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+            if ($LASTEXITCODE -ne 0) { throw 'torch cu128 pre-install failed' }
+          }
           $before = Size venv
           .\venv\Scripts\python -m pip install --no-cache-dir "${{ matrix.pkg }}"
           $rc = $LASTEXITCODE
           $after = Size venv
-          $line = "${{ matrix.pkg }}  rc=$rc  installBytes=$($after - $before)  ($([math]::Round(($after-$before)/1MB,1)) MiB)  python=$(.\venv\Scripts\python --version)"
+          $line = "${{ matrix.pkg }} [${{ matrix.variant }}]  rc=$rc  installBytes=$($after - $before)  ($([math]::Round(($after-$before)/1MB,1)) MiB)  python=$(.\venv\Scripts\python --version)"
           Write-Host $line; $line | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "### pip check [${{ matrix.variant }}]" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "```" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          .\venv\Scripts\python -m pip check 2>&1 | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "```" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "### torch info [${{ matrix.variant }}]" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "```" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          .\venv\Scripts\python -c "import torch;print(torch.__version__, torch.version.cuda)" 2>&1 | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          "```" | Out-File $env:GITHUB_STEP_SUMMARY -Append
           if ($rc -ne 0) { throw 'pip install failed' }
