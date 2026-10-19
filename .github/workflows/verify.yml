@@ -151,6 +151,8 @@ jobs:
           '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
           '### torch info [${{ matrix.variant }}]' | Out-File $env:GITHUB_STEP_SUMMARY -Append
           '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
-          .\venv\Scripts\python -c "import torch;print(torch.__version__, torch.version.cuda)" 2>&1 | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          & .\venv\Scripts\python -c "import torch;print(torch.__version__, torch.version.cuda)" 2>&1 | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          if ($LASTEXITCODE -ne 0) { 'torch NOT installed in this variant (import failed)' | Out-File $env:GITHUB_STEP_SUMMARY -Append }
           '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          $LASTEXITCODE = 0 # the torch probe is data, never a step failure
           if ($rc -ne 0) { throw 'pip install failed' }

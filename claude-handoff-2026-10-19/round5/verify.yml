@@ -145,12 +145,12 @@ jobs:
           $after = Size venv
           $line = "${{ matrix.pkg }} [${{ matrix.variant }}]  rc=$rc  installBytes=$($after - $before)  ($([math]::Round(($after-$before)/1MB,1)) MiB)  python=$(.\venv\Scripts\python --version)"
           Write-Host $line; $line | Out-File $env:GITHUB_STEP_SUMMARY -Append
-          "### pip check [${{ matrix.variant }}]" | Out-File $env:GITHUB_STEP_SUMMARY -Append
-          "```" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          '### pip check [${{ matrix.variant }}]' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
           .\venv\Scripts\python -m pip check 2>&1 | Out-File $env:GITHUB_STEP_SUMMARY -Append
-          "```" | Out-File $env:GITHUB_STEP_SUMMARY -Append
-          "### torch info [${{ matrix.variant }}]" | Out-File $env:GITHUB_STEP_SUMMARY -Append
-          "```" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          '### torch info [${{ matrix.variant }}]' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
           .\venv\Scripts\python -c "import torch;print(torch.__version__, torch.version.cuda)" 2>&1 | Out-File $env:GITHUB_STEP_SUMMARY -Append
-          "```" | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
           if ($rc -ne 0) { throw 'pip install failed' }
