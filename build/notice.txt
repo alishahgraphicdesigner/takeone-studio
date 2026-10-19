@@ -1,0 +1,16 @@
+IMPORTANT — PLEASE READ (this is not the license agreement; the full EULA ships with the v2.2 final release)
+
+1. This build of TakeOne Studio is NOT code-signed yet. Windows SmartScreen may show
+   a warning ("Unknown publisher") when you run the installer. This is expected and
+   safe to pass through. Code signing arrives with the commercial release.
+
+2. What this installer puts on your PC:
+   - The TakeOne Studio app (this program, one desktop icon).
+   - A private Python runtime used only by TakeOne (no system Python changes, no PATH changes).
+   Nothing else is installed. No tool downloads happen yet — those arrive with the next update.
+
+3. Your TakeOne folder (default: Documents\TakeOne) holds your projects, models and
+   settings. Uninstalling the app never deletes that folder silently — the app asks
+   you first, every time.
+
+TakeOne: "First take. Final take." — the AI film studio that knows you.

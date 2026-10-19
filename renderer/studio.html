@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TakeOne Studio</title>
+<link rel="stylesheet" href="studio.css">
+<link rel="stylesheet" href="models.css">
+<link rel="stylesheet" href="pipeline.css">
+<link rel="stylesheet" href="library.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div class="mark">T<span>1</span></div>
+    <button class="railbtn active" data-view="studio">Studio</button>
+    <button class="railbtn" data-view="library">Library</button>
+    <button class="railbtn" data-view="models">Models</button>
+    <button class="railbtn" data-view="extras">Extras</button>
+    <button class="railbtn" data-view="settings">Settings</button>
+    <div class="railfoot" id="appVersion">v…</div>
+  </aside>
+  <main class="panel">
+    <section class="view on" id="view-studio">
+      <div id="resumeStrip" hidden></div>
+      <div id="studioBody">
+        <div id="threadStrip"></div>
+        <div id="stepRail"></div>
+        <div id="stepPanel"></div>
+        <div id="assistMoves"></div>
+        <h2>Standalone tools</h2>
+        <p class="lede">Independent from the pipeline — use them on any file, at any time.</p>
+        <div id="toolCards"></div>
+      </div>
+    </section>
+    <section class="view" id="view-library">
+      <div id="libraryBody"><p class="muted">Loading your Library…</p></div>
+    </section>
+    <section class="view" id="view-models">
+      <h1>Models</h1>
+      <p class="lede">Every tool TakeOne can run, with honest sizes and plain-words licenses. Nothing downloads without you — and nothing here needs a terminal.</p>
+      <div class="offbanner" id="offlineBanner" hidden>You appear to be offline. Downloads are paused until you reconnect — nothing will fail silently.</div>
+      <div class="mbar" id="diskMeter"><span class="mtext">Measuring disk space…</span></div>
+      <div id="modelCards"><p class="muted">Loading the tool catalog…</p></div>
+      <div class="dock" id="dlDock" hidden></div>
+      <button id="dockFab" hidden></button>
+    </section>
+    <section class="view" id="view-extras">
+      <div id="extrasBody"><p class="muted">Loading extras…</p></div>
+    </section>
+    <section class="view" id="view-settings">
+      <h1>Settings</h1>
+      <div class="cards" id="settingsCards"></div>
+      <h2>Niche lens</h2>
+      <p class="lede">Tunes suggestions only — it never locks tools or hides features.</p>
+      <div class="cards"><div class="card wide"><div id="nicheChips" class="chips"></div></div></div>
+      <h2>Taste Lock</h2>
+      <p class="lede">Your Always / Never rules. TakeOne's suggestions follow them in every project.</p>
+      <div class="card wide">
+        <div id="tasteList"><p class="muted">Loading…</p></div>
+        <div class="row" style="margin-top:10px">
+          <select id="tasteType" aria-label="Rule type"><option value="always">Always</option><option value="never">Never</option></select>
+          <input id="tasteText" placeholder="e.g. Warm narrator voice" style="flex:1">
+          <button class="primary sm" id="tasteAdd">Add rule</button>
+        </div>
+      </div>
+      <h2>Storage</h2>
+      <div class="cards" id="storageCards"><div class="card"><b>Measuring…</b></div></div>
+      <h2>About</h2>
+      <div class="card wide">
+        <b>TakeOne Studio <span id="appVersionTitle">…</span></b>
+        <p class="muted">First take. Final take. — The AI film studio that knows you.</p>
+        <p class="muted">Bundled components and their licenses:</p>
+        <ul class="lic">
+          <li>Electron — MIT License</li>
+          <li>Python (python-build-standalone) — Python Software Foundation License</li>
+        </ul>
+        <p class="muted">The complete license list ships with the v2.2 final release.</p>
+      </div>
+      <h2 class="danger-h">Remove TakeOne</h2>
+      <div class="card wide">
+        <p class="muted">Uninstalls the app. You choose what happens to your models, projects and trash — nothing is deleted silently.</p>
+        <button class="danger" id="removeBtn">Remove TakeOne…</button>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="modal-back" id="removeModal" hidden>
+  <div class="modal">
+    <h2>Remove TakeOne?</h2>
+    <p class="muted">Choose what goes. Anything you keep stays in your TakeOne folder, ready if you reinstall.</p>
+    <div id="removeList"><p class="muted">Measuring…</p></div>
+    <div class="mactions">
+      <button class="ghost" id="removeCancel">Cancel</button>
+      <button class="danger" id="removeGo">Remove selected &amp; uninstall</button>
+    </div>
+    <p class="muted small" id="removeNote"></p>
+  </div>
+</div>
+<script src="ui.js"></script>
+<script src="studio.js"></script>
+<script src="models.js"></script>
+<script src="pipeline.js"></script>
+<script src="library.js"></script>
+<script src="extras.js"></script>
+<div id="toast" class="toast" hidden></div>
+</body>
+</html>

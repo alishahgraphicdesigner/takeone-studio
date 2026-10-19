@@ -1,0 +1,98 @@
+RETRY3 START 2026-10-17T16:12:58Z
+/usr/bin/rustc
+/usr/bin/cargo
+=== lama-cleaner==1.2.5 ===
+before=13275382
+  error: subprocess-exited-with-error
+  
+  × Building wheel for tokenizers (pyproject.toml) did not run successfully.
+  │ exit code: 1
+  ╰─> [76 lines of output]
+      /home/hatch/workspace/.pip-tmp/pip-build-env-9v6jku2o/overlay/lib/python3.12/site-packages/setuptools/dist.py:765: SetuptoolsDeprecationWarning: License classifiers are deprecated.
+      !!
+      
+              ********************************************************************************
+              Please consider removing the following classifiers in favor of a SPDX license expression:
+      
+              License :: OSI Approved :: Apache Software License
+      
+              See https://packaging.python.org/en/latest/guides/writing-pyproject-toml/#license for details.
+              ********************************************************************************
+      
+      !!
+        self._finalize_license_expression()
+      running bdist_wheel
+      running build
+      running build_py
+      creating build/lib.linux-x86_64-cpython-312/tokenizers
+      copying py_src/tokenizers/__init__.py -> build/lib.linux-x86_64-cpython-312/tokenizers
+      creating build/lib.linux-x86_64-cpython-312/tokenizers/models
+      copying py_src/tokenizers/models/__init__.py -> build/lib.linux-x86_64-cpython-312/tokenizers/models
+      creating build/lib.linux-x86_64-cpython-312/tokenizers/decoders
+      copying py_src/tokenizers/decoders/__init__.py -> build/lib.linux-x86_64-cpython-312/tokenizers/decoders
+      creating build/lib.linux-x86_64-cpython-312/tokenizers/normalizers
+      copying py_src/tokenizers/normalizers/__init__.py -> build/lib.linux-x86_64-cpython-312/tokenizers/normalizers
+      creating build/lib.linux-x86_64-cpython-312/tokenizers/pre_tokenizers
+      copying py_src/tokenizers/pre_tokenizers/__init__.py -> build/lib.linux-x86_64-cpython-312/tokenizers/pre_tokenizers
+      creating build/lib.linux-x86_64-cpython-312/tokenizers/processors
+      copying py_src/tokenizers/processors/__init__.py -> build/lib.linux-x86_64-cpython-312/tokenizers/processors
+      creating build/lib.linux-x86_64-cpython-312/tokenizers/trainers
+      copying py_src/tokenizers/trainers/__init__.py -> build/lib.linux-x86_64-cpython-312/tokenizers/trainers
+      creating build/lib.linux-x86_64-cpython-312/tokenizers/implementations
+      copying py_src/tokenizers/implementations/__init__.py -> build/lib.linux-x86_64-cpython-312/tokenizers/implementations
+      copying py_src/tokenizers/implementations/base_tokenizer.py -> build/lib.linux-x86_64-cpython-312/tokenizers/implementations
+      copying py_src/tokenizers/implementations/bert_wordpiece.py -> build/lib.linux-x86_64-cpython-312/tokenizers/implementations
+      copying py_src/tokenizers/implementations/byte_level_bpe.py -> build/lib.linux-x86_64-cpython-312/tokenizers/implementations
+      copying py_src/tokenizers/implementations/char_level_bpe.py -> build/lib.linux-x86_64-cpython-312/tokenizers/implementations
+      copying py_src/tokenizers/implementations/sentencepiece_bpe.py -> build/lib.linux-x86_64-cpython-312/tokenizers/implementations
+      copying py_src/tokenizers/implementations/sentencepiece_unigram.py -> build/lib.linux-x86_64-cpython-312/tokenizers/implementations
+      creating build/lib.linux-x86_64-cpython-312/tokenizers/tools
+      copying py_src/tokenizers/tools/__init__.py -> build/lib.linux-x86_64-cpython-312/tokenizers/tools
+      copying py_src/tokenizers/tools/visualizer.py -> build/lib.linux-x86_64-cpython-312/tokenizers/tools
+      copying py_src/tokenizers/__init__.pyi -> build/lib.linux-x86_64-cpython-312/tokenizers
+      copying py_src/tokenizers/models/__init__.pyi -> build/lib.linux-x86_64-cpython-312/tokenizers/models
+      copying py_src/tokenizers/decoders/__init__.pyi -> build/lib.linux-x86_64-cpython-312/tokenizers/decoders
+      copying py_src/tokenizers/normalizers/__init__.pyi -> build/lib.linux-x86_64-cpython-312/tokenizers/normalizers
+      copying py_src/tokenizers/pre_tokenizers/__init__.pyi -> build/lib.linux-x86_64-cpython-312/tokenizers/pre_tokenizers
+      copying py_src/tokenizers/processors/__init__.pyi -> build/lib.linux-x86_64-cpython-312/tokenizers/processors
+      copying py_src/tokenizers/trainers/__init__.pyi -> build/lib.linux-x86_64-cpython-312/tokenizers/trainers
+      copying py_src/tokenizers/tools/visualizer-styles.css -> build/lib.linux-x86_64-cpython-312/tokenizers/tools
+      running build_ext
+      running build_rust
+          Updating crates.io index
+       Downloading crates ...
+        Downloaded aes v0.8.4
+        Downloaded ident_case v1.0.1
+        Downloaded cfg-if v1.0.5
+        Downloaded anstyle-query v1.1.5
+        Downloaded adler2 v2.0.1
+        Downloaded atty v0.2.14
+        Downloaded crypto-common v0.1.7
+        Downloaded constant_time_eq v0.1.5
+        Downloaded clap_lex v1.1.1
+      error: failed to download replaced source registry `crates-io`
+      
+      Caused by:
+        failed to parse manifest at `/home/hatch/.cargo/registry/src/index.crates.io-6f17d22bba15001f/clap_lex-1.1.1/Cargo.toml`
+      
+      Caused by:
+        feature `edition2024` is required
+      
+        The package requires the Cargo feature called `edition2024`, but that feature is not stabilized in this version of Cargo (1.75.0).
+        Consider trying a more recent nightly release.
+        See https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#edition-2024 for more information about the status of this feature.
+      error: `cargo metadata --manifest-path Cargo.toml --format-version 1` failed with code 101
+      -- Output captured from stdout:
+      
+      [end of output]
+  
+  note: This error originates from a subprocess, and is likely not a problem with pip.
+  ERROR: Failed building wheel for tokenizers
+ERROR: Could not build wheels for tokenizers, which is required to install pyproject.toml-based projects
+after=13275382 diff=0 MiB=0.00 pip_rc=1
+done lama-cleaner==1.2.5 diff=0 rc=1
+=== deepfilternet==0.5.6 ===
+before=13275382
+after=168609367 diff=155333985 MiB=148.14 pip_rc=0
+done deepfilternet==0.5.6 diff=155333985 rc=0
+RETRY3 END 2026-10-17T16:27:09Z

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>TakeOne Studio</title>
+<style>
+  body{background:#0B0B0F; color:#F2F0E9; font-family:"Segoe UI",system-ui,sans-serif;
+    display:flex; align-items:center; justify-content:center; height:100vh; margin:0}
+  .box{text-align:center; width:300px}
+  .mark{width:56px; height:56px; border-radius:14px; background:#121218; border:1px solid #26262f;
+    display:flex; align-items:center; justify-content:center; font-size:26px; font-weight:900; margin:0 auto 18px}
+  .mark span{color:#F5A623}
+  p{color:#9a97a3; font-size:13.5px; margin-bottom:18px}
+  .bar{height:6px; background:#26262f; border-radius:3px; overflow:hidden}
+  .bar i{display:block; height:100%; width:0; background:#F5A623; transition:width .2s}
+  #err{color:#e05c5c; font-size:13px; margin-top:14px; display:none}
+  #retry{display:none; margin-top:14px; background:transparent; color:#F5A623; border:1px solid #7a5413;
+    border-radius:8px; padding:8px 20px; cursor:pointer; font-size:13px}
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="mark">T<span>1</span></div>
+  <p id="msg">Preparing TakeOne for first run…</p>
+  <div class="bar"><i id="fill"></i></div>
+  <p id="err"></p>
+  <button id="retry">Try again</button>
+</div>
+<script>
+  window.takeone.onSplashProgress(v => { document.getElementById('fill').style.width = v + '%'; });
+  window.takeone.onSplashError(msg => {
+    document.getElementById('msg').textContent = 'Something went wrong during first-run setup.';
+    const e = document.getElementById('err');
+    e.textContent = msg; e.style.display = 'block';
+    document.getElementById('retry').style.display = 'inline-block';
+  });
+  document.getElementById('retry').addEventListener('click', () => window.takeone.splashRetry());
+</script>
+</body>
+</html>

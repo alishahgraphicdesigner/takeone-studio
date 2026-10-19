@@ -1,0 +1,76 @@
+/* TakeOne Studio 2.2.0 — Phase B: Model Manager styles. */
+.mbar{display:flex; gap:14px; align-items:center; background:var(--panel); border:1px solid var(--line);
+  border-radius:12px; padding:14px 18px; margin-bottom:18px; flex-wrap:wrap}
+.mbar .meter{flex:1; min-width:200px; height:8px; background:var(--panel2); border-radius:99px; overflow:hidden}
+.mbar .meter i{display:block; height:100%; background:var(--amber); border-radius:99px}
+.mbar .mtext{font-size:13px; color:var(--muted)}
+.mbar .mtext b{color:var(--text)}
+.offbanner{background:#2a1414; border:1px solid #5a2c2c; color:#f0b0b0; border-radius:12px;
+  padding:12px 18px; margin-bottom:18px; font-size:13.5px}
+.mgroup{margin:26px 0 8px}
+.mgroup h2{font-size:16px; margin:0 0 4px}
+.mgroup p{color:var(--muted); font-size:13px; margin-bottom:12px}
+.mgrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px}
+.tcard{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px;
+  display:flex; flex-direction:column; gap:8px}
+.tcard.gated{opacity:.62}
+.tcard .thead{display:flex; align-items:flex-start; justify-content:space-between; gap:10px}
+.tcard .tname{font-size:14.5px; font-weight:700}
+.tcard .ttech{color:var(--muted); font-size:12.5px; margin-top:2px}
+.tcard .why{color:var(--muted); font-size:13px; line-height:1.5}
+.tcard .tmeta{display:flex; gap:8px; flex-wrap:wrap; font-size:12px; color:var(--muted)}
+.tcard .tmeta span{background:var(--panel2); border:1px solid var(--line); border-radius:99px; padding:3px 10px}
+.badge{font-size:11.5px; font-weight:700; letter-spacing:.4px; text-transform:uppercase;
+  border-radius:99px; padding:4px 11px; white-space:nowrap}
+.badge.untested{background:#1c1a12; color:#d8b45c; border:1px solid #5a4a1e}
+.badge.expected{background:#141a22; color:#8fb8e0; border:1px solid #2c4a5a}
+.badge.ok{background:#12241a; color:#7fd6a4; border:1px solid #2c5a3c}
+.badge.working{background:#1a1a26; color:var(--amber); border:1px solid var(--amber-dim)}
+.badge.bad{background:#2a1414; color:#f0a0a0; border:1px solid #5a2c2c}
+.gatereason{background:#1c1a12; border:1px solid #5a4a1e; border-radius:10px; padding:10px 12px;
+  font-size:12.5px; line-height:1.5; color:#e8dcc2}
+.gatereason button{margin-top:6px}
+.whybox{font-size:12.5px; color:var(--muted); line-height:1.55; background:var(--panel2);
+  border-radius:8px; padding:8px 10px}
+.prog{height:8px; background:var(--panel2); border-radius:99px; overflow:hidden}
+.prog i{display:block; height:100%; background:var(--amber); border-radius:99px; transition:width .3s}
+.progwrap{font-size:12.5px; color:var(--muted)}
+.progwrap .row{display:flex; justify-content:space-between; margin-bottom:6px}
+.tcard .actions{display:flex; gap:8px; margin-top:4px; flex-wrap:wrap}
+.btn{background:var(--amber); color:#111; border:none; font-weight:700; padding:9px 18px}
+.btn:hover{filter:brightness(1.08)}
+.btn:disabled{background:var(--panel2); color:var(--muted); cursor:not-allowed; filter:none}
+.btn.ghost2{background:transparent; color:var(--text); border:1px solid var(--line); font-weight:400; padding:9px 16px}
+.btn.ghost2:hover{border-color:var(--amber); color:var(--amber)}
+.btn.small{padding:7px 14px; font-size:13px}
+.err{background:#2a1414; border:1px solid #5a2c2c; border-radius:10px; padding:10px 12px;
+  font-size:13px; line-height:1.5; color:#f0c0c0}
+.err b{color:#f0a0a0}
+.plan{font-size:12.5px; color:var(--muted); line-height:1.6}
+.plan ol{margin:6px 0 6px 18px}
+.plan .dep{background:var(--panel2); border:1px solid var(--line); border-radius:8px;
+  padding:8px 10px; margin-top:6px}
+.dock{position:fixed; right:16px; top:64px; bottom:16px; width:400px; max-width:calc(100vw - 32px);
+  background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 16px;
+  z-index:50; overflow-y:auto; box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.dock.minimized{display:none}
+.dock h3{font-size:13px; margin-bottom:8px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px;
+  display:flex; align-items:center; justify-content:space-between}
+.dock h3 .dockmin{background:none; border:1px solid var(--line); color:var(--muted); border-radius:6px;
+  padding:2px 8px; cursor:pointer; font-size:12px}
+.dock h3 .dockmin:hover{color:#fff; border-color:#666}
+.docksec{font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.8px; color:var(--muted);
+  margin:12px 0 4px; padding-top:8px; border-top:1px solid var(--line)}
+.docksec:first-of-type{margin-top:4px; padding-top:0; border-top:none}
+#dockFab{position:fixed; right:16px; bottom:16px; z-index:50; background:var(--accent); color:#fff;
+  border:none; border-radius:24px; padding:10px 18px; font-size:13px; font-weight:600; cursor:pointer;
+  box-shadow:0 4px 16px rgba(0,0,0,.4)}
+#dockFab:hover{filter:brightness(1.1)}
+#dockFab[hidden]{display:none}
+body.dock-open #view-models{padding-right:432px}
+.dockrow{padding:10px 0; border-top:1px solid var(--line); font-size:13px}
+.dockrow:first-of-type{border-top:none}
+.dockrow .nm{font-weight:600; margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.dockrow .prog{margin-bottom:6px}
+.dockrow .st{color:var(--muted); font-size:12px; margin-bottom:6px}
+.dockrow .ops{display:flex; gap:6px; flex-wrap:wrap}

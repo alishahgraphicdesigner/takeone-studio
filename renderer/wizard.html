@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TakeOne Studio — Setup</title>
+<link rel="stylesheet" href="wizard.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="brand">
+    <div class="mark">T<span>1</span></div>
+    <div class="brand-name">TakeOne Studio</div>
+    <div class="tagline">First take. Final take.</div>
+    <div class="steps" id="steps"></div>
+  </aside>
+  <main class="panel">
+    <!-- STEP 1 -->
+    <section class="step" data-step="1">
+      <h1>Welcome to TakeOne Studio</h1>
+      <p class="lede">The AI film studio that knows you. Everything runs on your own PC — private, offline-capable, no subscriptions.</p>
+      <div class="what">
+        <div class="what-row"><span class="n">1</span><div><b>Check My PC</b><p>We measure your graphics card, memory, disk space and download speed — then recommend the right tools.</p></div></div>
+        <div class="what-row"><span class="n">2</span><div><b>Choose a home for TakeOne</b><p>One folder holds your projects, models and settings. Change it now or later.</p></div></div>
+        <div class="what-row"><span class="n">3</span><div><b>Pick your tools</b><p>Take the recommended pack, choose tools yourself, or skip — you can add tools any time.</p></div></div>
+      </div>
+      <div class="notice">
+        <b>A note before we start.</b>
+        This build is not code-signed yet, so Windows SmartScreen may show a warning during install.
+        That is expected and safe to pass through — code signing arrives with the commercial release.
+      </div>
+      <div class="actions"><button class="primary" data-next>Let's begin</button></div>
+    </section>
+
+    <!-- STEP 2 -->
+    <section class="step" data-step="2">
+      <h1>Check My PC</h1>
+      <p class="lede">Real measurements from this machine — nothing assumed.</p>
+      <div class="checks" id="pcChecks">
+        <div class="check" id="ck-gpu"><span class="spin"></span><div><b>Graphics card</b><p class="val">Measuring…</p></div></div>
+        <div class="check" id="ck-ram"><span class="spin"></span><div><b>Memory</b><p class="val">Measuring…</p></div></div>
+        <div class="check" id="ck-disk"><span class="spin"></span><div><b>Free disk space</b><p class="val">Measuring…</p></div></div>
+        <div class="check" id="ck-speed"><span class="spin"></span><div><b>Download speed</b><p class="val">Measuring…</p></div></div>
+      </div>
+      <div class="actions">
+        <button class="ghost" data-back>Back</button>
+        <button class="ghost" id="recheck">Re-check</button>
+        <button class="primary" data-next id="pcNext" disabled>Continue</button>
+      </div>
+    </section>
+
+    <!-- STEP 3 -->
+    <section class="step" data-step="3">
+      <h1>Where should TakeOne live?</h1>
+      <p class="lede">One folder for everything — your projects, models, downloads and settings.</p>
+      <div class="pathbox">
+        <div class="path" id="storagePath">…</div>
+        <button class="ghost" id="changePath">Change folder</button>
+      </div>
+      <p class="hint" id="diskHint">Checking free space…</p>
+      <p class="hint">You can move TakeOne to another drive later in Settings — the app handles the move itself.</p>
+      <div class="actions">
+        <button class="ghost" data-back>Back</button>
+        <button class="primary" data-next>Continue</button>
+      </div>
+    </section>
+
+    <!-- STEP 4 -->
+    <section class="step" data-step="4">
+      <h1>Pick your tools</h1>
+      <p class="lede">Tool downloads arrive with the next update — your choice is saved now and used then.</p>
+      <div class="reco" id="recoBox"><b id="recoTitle">Recommended for your PC</b><p id="recoReason">Waiting for the PC check…</p></div>
+      <div class="radios">
+        <label class="radio"><input type="radio" name="pack" value="recommended" checked>
+          <div><b>Recommended pack</b><p id="recoPackDesc">Chosen from your real PC measurements.</p></div></label>
+        <label class="radio"><input type="radio" name="pack" value="custom">
+          <div><b>Choose tools myself</b><p>Pick individual tools below. Sizes and VRAM needs are shown honestly.</p></div></label>
+        <label class="radio"><input type="radio" name="pack" value="skip">
+          <div><b>Skip for now</b><p>No downloads yet. You can add tools later from the Model Manager.</p></div></label>
+      </div>
+      <div class="tools" id="toolList" hidden></div>
+      <div class="scanrow">
+        <button class="ghost" id="scanBtn">Scan for existing models</button>
+        <button class="ghost" id="scanOtherBtn">Scan another folder&#8230;</button>
+        <span class="hint" id="scanHint">Already have model files on this PC? We will reuse them instead of downloading again.</span>
+      </div>
+      <div class="found" id="adoptBox" hidden></div>
+      <div class="found" id="foundBox" hidden><b>Found on this PC</b><ul id="foundList"></ul></div>
+      <div class="gatewarn" id="gateWarn" hidden>
+        <label class="ack"><input type="checkbox" id="ackLater">
+          <span>I understand the Studio needs tools to generate anything — <b>I will add tools later</b> from the Model Manager.</span></label>
+      </div>
+      <div class="actions">
+        <button class="ghost" data-back>Back</button>
+        <button class="primary" data-next id="packNext">Continue</button>
+      </div>
+    </section>
+
+    <!-- STEP 5 -->
+    <section class="step" data-step="5">
+      <h1>You're set</h1>
+      <p class="lede">Here's what we saved. You can change any of it later in Settings.</p>
+      <div class="summary" id="summaryBox"></div>
+      <div class="notice"><b>What happens next.</b> Head to Models to download your AI tools, then open the Studio for your first project.
+        Your choices are saved and will be used automatically — nothing to redo.</div>
+      <div class="notice"><b>One honest note.</b> Your first tries won't be perfect — that's normal, not failure.
+        Every version is kept, so experimenting costs you nothing.</div>
+      <div class="actions">
+        <button class="ghost" data-back>Back</button>
+        <button class="primary" id="openStudio">Open Studio</button>
+      </div>
+    </section>
+  </main>
+</div>
+<script src="ui.js"></script>
+<script src="wizard.js"></script>
+</body>
+</html>

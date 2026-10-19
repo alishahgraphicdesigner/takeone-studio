@@ -1,0 +1,75 @@
+:root{
+  --bg:#0B0B0F; --panel:#121218; --panel2:#17171f; --line:#26262f;
+  --text:#F2F0E9; --muted:#9a97a3; --amber:#F5A623; --amber-dim:#7a5413;
+  --green:#4caf7d; --red:#e05c5c;
+}
+*{box-sizing:border-box; margin:0; padding:0}
+body{background:var(--bg); color:var(--text); font-family:"Segoe UI",system-ui,sans-serif; height:100vh; overflow:hidden}
+.shell{display:flex; height:100vh}
+.rail{width:190px; background:var(--panel); border-right:1px solid var(--line); padding:28px 16px; display:flex; flex-direction:column; gap:8px}
+.mark{width:52px; height:52px; border-radius:14px; background:var(--bg); border:1px solid var(--line);
+  display:flex; align-items:center; justify-content:center; font-size:24px; font-weight:900; color:#fff; margin-bottom:20px}
+.mark span{color:var(--amber)}
+.railbtn{background:transparent; border:1px solid transparent; color:var(--muted); text-align:left;
+  padding:11px 14px; border-radius:10px; font-size:14px; cursor:pointer; font-family:inherit}
+.railbtn:hover{color:var(--text)}
+.railbtn.active{background:var(--panel2); color:var(--amber); border-color:var(--line)}
+.railfoot{margin-top:auto; color:var(--muted); font-size:12px; padding:0 14px}
+.panel{flex:1; padding:48px 56px; overflow-y:auto}
+.view{display:none; max-width:900px}
+.view.on{display:block}
+h1{font-size:28px; margin-bottom:10px}
+h2{font-size:18px; margin:28px 0 14px}
+.danger-h{color:var(--red)}
+.lede{color:var(--muted); margin-bottom:28px; font-size:15px; line-height:1.55}
+.cards{display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:14px; margin-bottom:8px}
+.card{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px}
+.card.wide{grid-column:1/-1}
+.card b{font-size:14.5px}
+.card .k{color:var(--muted); font-size:12.5px; text-transform:uppercase; letter-spacing:.6px; margin-bottom:6px}
+.card p{font-size:13.5px; margin-top:6px; line-height:1.5}
+.muted{color:var(--muted); font-size:13.5px; line-height:1.55}
+.muted.small{font-size:12.5px}
+.notice{background:#1a1408; border:1px solid var(--amber-dim); border-radius:12px; padding:16px 18px; font-size:13.5px; line-height:1.6; color:#e8dcc2; margin-top:24px; max-width:900px}
+.notice b{color:var(--amber)}
+.lic{margin:8px 0 8px 20px; color:var(--muted); font-size:13px}
+.lic li{margin-bottom:4px}
+button{font-family:inherit; cursor:pointer; border-radius:10px; font-size:14px; padding:11px 22px; border:1px solid transparent}
+.ghost{background:transparent; color:var(--text); border-color:var(--line)}
+.ghost:hover{border-color:var(--amber); color:var(--amber)}
+.danger{background:transparent; color:var(--red); border-color:#5a2c2c}
+.danger:hover{background:#2a1414}
+.link{background:none; border:none; color:var(--amber); padding:0; font-size:13px; text-decoration:underline}
+.modal-back{position:fixed; inset:0; background:rgba(0,0,0,.65); display:flex; align-items:center; justify-content:center; z-index:50}
+.modal-back[hidden]{display:none}
+.modal{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:32px; width:560px; max-width:92vw}
+.modal h2{margin:0 0 10px}
+.rmlist{display:flex; flex-direction:column; gap:10px; margin:18px 0}
+.rmrow{display:flex; gap:12px; align-items:flex-start; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:12px 14px; cursor:pointer; font-size:14px}
+.rmrow input{margin-top:3px; accent-color:var(--red)}
+.rmrow .sz{color:var(--muted); font-size:12.5px; margin-top:2px}
+.mactions{display:flex; gap:12px; justify-content:flex-end; margin-top:8px}
+
+/* Phase C: niche chips + taste lock */
+.chips{display:flex; gap:8px; flex-wrap:wrap}
+.chip{background:var(--panel2); border:1px solid var(--line); color:var(--muted); border-radius:20px; padding:8px 18px; font-size:13.5px}
+.chip.sel{border-color:var(--amber); color:var(--amber)}
+.tasterow{display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--line)}
+.tasterow:last-child{border-bottom:none}
+.tbadge{font-size:11px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; border-radius:6px; padding:3px 10px; white-space:nowrap}
+.tbadge.always{background:#1c2b1c; color:#9fd69f}
+.tbadge.never{background:#331414; color:#ff9a9a}
+.ttext{flex:1; font-size:14px}
+#tasteText, #tasteType{background:var(--bg); border:1px solid var(--line); color:var(--text); border-radius:8px; padding:8px 12px; font-size:14px; font-family:inherit}
+
+/* Undo-toast (decision #47) + Extras grid (decision #37) */
+.toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  background: #23232e; border: 1px solid rgba(255,255,255,.14); border-radius: 10px;
+  padding: 10px 16px; display: flex; gap: 12px; align-items: center; z-index: 9999;
+  box-shadow: 0 8px 30px rgba(0,0,0,.5); font-size: 13px; }
+.toast .link { font-weight: 700; }
+.xgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-bottom: 8px; }
+.xcard { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.09);
+  border-radius: 10px; padding: 14px 16px; }
+.xcard b { font-size: 14px; }
+.xcard p { margin: 6px 0 8px; }
