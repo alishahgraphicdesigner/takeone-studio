@@ -91,12 +91,13 @@ function mapAriaStatus(s) {
 }
 
 class DownloadManager {
-  constructor({ root, aria2cPath, onEvent, diskFreeGB, pollMs }) {
+  constructor({ root, aria2cPath, onEvent, diskFreeGB, pollMs, hfBase }) {
     this.root = root;
     this.aria2cPath = aria2cPath;
     this.onEvent = onEvent || (() => {});
     this.diskFreeGB = diskFreeGB || (async () => null);
     this.pollMs = pollMs || POLL_MS;
+    this.hfBase = (hfBase || 'https://huggingface.co').replace(/\/+$/, ''); // overridable so tests can point at a local server
     this.secret = crypto.randomBytes(16).toString('hex');
     this.rpcPort = null; // picked at start()
     this.proc = null;
@@ -359,7 +360,7 @@ class DownloadManager {
     }
     if (e.currentFileIndex >= e.files.length) return this._finishHf(toolId, e);
     const f = e.files[e.currentFileIndex];
-    const url = `https://huggingface.co/${e.repo}/resolve/${e.commit}/${encPath(f.path)}`;
+    const url = `${this.hfBase}/${e.repo}/resolve/${e.commit}/${encPath(f.path)}`;
     const outName = `hf_${toolId}_${e.currentFileIndex}_${path.basename(f.path)}`;
     await this._prepOut(toolId, outName);
     e.status = 'downloading';

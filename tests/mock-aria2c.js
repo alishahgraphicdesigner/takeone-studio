@@ -15,7 +15,31 @@ const failsLeft = new Map();
 const dls = new Map(); let next = 1;
 const chunk = (seed, start, len) => { const b = Buffer.alloc(len); for (let i = 0; i < len; i++) b[i] = ((start + i) * 7 + seed) & 255; return b; };
 
+function startHttp(d) {
+  // http:// URLs are really fetched (Range resume), so server-based tests can run against this simulator too.
+  const u = new URL(d.url); const headers = {}; if (d.done > 0) headers.Range = `bytes=${d.done}-`;
+  d.req = http.get({ host: u.hostname, port: u.port, path: u.pathname, headers }, (res) => {
+    if (res.statusCode >= 400) { d.status = 'error'; d.err = 'HTTP ' + res.statusCode; return; }
+    d.size = d.done + Number(res.headers['content-length'] || 0);
+    res.on('data', (c) => {
+      if (d.status !== 'active') { res.destroy(); return; }
+      fs.appendFileSync(d.p, c); d.done += c.length; fs.writeFileSync(d.p + '.aria2', JSON.stringify({ done: d.done }));
+    });
+    res.on('end', () => { if (d.status === 'active') { d.status = 'complete'; try { fs.unlinkSync(d.p + '.aria2'); } catch (e) { /* ignore */ } } });
+  });
+  d.req.on('error', (e) => { if (d.status === 'active') { d.status = 'error'; d.err = String(e.message || e); } });
+}
+
 function addUri(url, out) {
+  if (url.startsWith('http://')) {
+    const d = { gid: String(next++).padStart(16, '0'), url, out, p: path.join(dir, out), size: 0, done: 0, status: 'active', err: null, mode: 'http' };
+    const ctl = d.p + '.aria2'; log(`ADD ${url} ${out}`);
+    const fe = fs.existsSync(d.p), ce = fs.existsSync(ctl);
+    if (fe && !ce) { d.status = 'error'; d.err = 'File already exists.'; }
+    else if (fe && ce) { d.done = JSON.parse(fs.readFileSync(ctl, 'utf8')).done; fs.truncateSync(d.p, d.done); log(`RESUME ${out} ${d.done}`); }
+    else fs.writeFileSync(d.p, '');
+    dls.set(d.gid, d); if (d.status === 'active') startHttp(d); return d.gid;
+  }
   const w = world()[url];
   const d = { gid: String(next++).padStart(16, '0'), url, out, p: path.join(dir, out), size: w ? w.size : 0, seed: w ? w.seed : 1, bps: (w && w.bps) || 300000, failAt: (w && w.failAt) || 0, done: 0, status: 'active', err: null };
   if (!w) { d.status = 'error'; d.err = 'Not found (404)'; }
@@ -33,7 +57,7 @@ function addUri(url, out) {
 }
 setInterval(() => {
   for (const d of dls.values()) {
-    if (d.status !== 'active') continue;
+    if (d.status !== 'active' || d.mode === 'http') continue;
     const n = Math.min(d.bps, d.size - d.done);
     if (n > 0) { fs.appendFileSync(d.p, chunk(d.seed, d.done, n)); d.done += n; fs.writeFileSync(d.p + '.aria2', JSON.stringify({ done: d.done })); }
     if (d.failAt && d.done >= d.failAt && (failsLeft.get(d.url) || 0) > 0) { failsLeft.set(d.url, failsLeft.get(d.url) - 1); d.status = 'error'; d.err = 'simulated network failure'; continue; }
@@ -51,9 +75,9 @@ http.createServer((req, res) => {
     if (m === 'getGlobalStat') return reply({});
     if (m === 'addUri') return reply(addUri(ps[0][0], ps[1].out));
     if (m === 'tellStatus') { const d = dls.get(ps[0]); if (!d) return reply(null, 'GID is not found'); log('TELL'); const s = stat(d); return setTimeout(() => reply(s), DELAY); }
-    if (m === 'remove' || m === 'forceRemove') { const d = dls.get(ps[0]); if (d) d.status = 'removed'; return reply(ps[0]); }
-    if (m === 'forcePause' || m === 'pause') { const d = dls.get(ps[0]); if (d && d.status === 'active') d.status = 'paused'; return reply(ps[0]); }
-    if (m === 'unpause') { const d = dls.get(ps[0]); if (d && d.status === 'paused') d.status = 'active'; return reply(ps[0]); }
+    if (m === 'remove' || m === 'forceRemove') { const d = dls.get(ps[0]); if (d) { d.status = 'removed'; if (d.req) d.req.destroy(); } return reply(ps[0]); }
+    if (m === 'forcePause' || m === 'pause') { const d = dls.get(ps[0]); if (d && d.status === 'active') { d.status = 'paused'; if (d.req) d.req.destroy(); } return reply(ps[0]); }
+    if (m === 'unpause') { const d = dls.get(ps[0]); if (d && d.status === 'paused') { d.status = 'active'; if (d.mode === 'http') startHttp(d); } return reply(ps[0]); }
     if (m === 'shutdown') { reply('OK'); return setTimeout(() => process.exit(0), 50); }
     return reply(null, 'unknown method ' + m);
   });
