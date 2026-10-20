@@ -91,8 +91,36 @@ jobs:
               wheels.append({'name': meta['name'], 'version': meta['version'], 'file': fname, 'url': url, 'bytes': n, 'sha256': sha})
               seen[fname] = True
           extra = [f for f in os.listdir('wheelhouse') if f not in seen]
-          if extra:
-              print('LOCK FAIL: wheelhouse holds files the resolution did not ask for:', extra); sys.exit(1)
+          # pip download also fetches wheels the dry-run report omits when the
+          # build python already has them installed (e.g. setuptools). They are
+          # legitimate wheelhouse members, but NOTHING enters the lock
+          # unverified: each extra must be found on the PyPI simple index with
+          # a published sha256 that matches the downloaded file.
+          import re, urllib.request
+          for fname in extra:
+              path = os.path.join('wheelhouse', fname)
+              h = hashlib.sha256(); n = 0
+              with open(path, 'rb') as fh:
+                  while True:
+                      chunk = fh.read(1 << 20)
+                      if not chunk: break
+                      h.update(chunk); n += len(chunk)
+              sha = h.hexdigest()
+              pkg = re.split(r'-\d', fname)[0].replace('_', '-').lower()
+              try:
+                  html = urllib.request.urlopen('https://pypi.org/simple/' + pkg + '/', timeout=60).read().decode('utf-8', 'replace')
+              except Exception as e:
+                  print('LOCK FAIL: extra wheel', fname, '- index lookup failed:', e); sys.exit(1)
+              m = None
+              for cand_url, cand_sha in re.findall(r'href="([^"]*?)#sha256=([0-9a-f]{64})"', html):
+                  if unquote(cand_url.split('/')[-1]) == fname:
+                      m = (cand_url, cand_sha); break
+              if not m:
+                  print('LOCK FAIL: extra wheel not found on the index:', fname); sys.exit(1)
+              if m[1] != sha:
+                  print('LOCK FAIL: extra wheel sha256 mismatch vs index:', fname); sys.exit(1)
+              wheels.append({'name': pkg, 'version': fname.split('-')[1], 'file': fname, 'url': m[0], 'bytes': n, 'sha256': sha})
+              print('extra wheel verified against index:', fname)
           wheels.sort(key=lambda w: w['name'].lower())
           lock = {'schema': 1, 'python': '3.11', 'index': 'https://download.pytorch.org/whl/cu128', 'extraIndex': 'https://pypi.org/simple',
                   'constraints': {'torch': '2.11.0+cu128', 'torchvision': '0.26.0+cu128', 'torchaudio': '2.11.0+cu128'},
