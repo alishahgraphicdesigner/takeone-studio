@@ -3,6 +3,11 @@
 # REPLACED by ComfyUI requirements (unpinned torch/torchvision from PyPI).
 # WO-11: the engine env is now HASH-PINNED end to end:
 #   1. constraints.txt pins torch/torchvision/torchaudio to exact cu128 builds.
+#      The trio is ALSO passed as explicit requirements everywhere: a
+#      constraints file only pins versions, it adds nothing — and ComfyUI's
+#      requirements.txt at the pinned commit does not list torchaudio
+#      (evidence: run 39389676665 installed torch+torchvision cu128 but no
+#      torchaudio; the assert step died on ModuleNotFoundError).
 #   2. pip resolves ComfyUI's requirements against those constraints and
 #      downloads every wheel into a wheelhouse (nothing installs yet).
 #   3. engine-lock.json is built from pip's own resolution report AND the
@@ -54,9 +59,9 @@ jobs:
         shell: pwsh
         run: |
           $sw = [System.Diagnostics.Stopwatch]::StartNew()
-          python -m pip install --dry-run --report pip-report.json --no-cache-dir -r ComfyUI\requirements.txt -c constraints.txt --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
+          python -m pip install --dry-run --report pip-report.json --no-cache-dir -r ComfyUI\requirements.txt -c constraints.txt "torch==2.11.0+cu128" "torchvision==0.26.0+cu128" "torchaudio==2.11.0+cu128" --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
           if ($LASTEXITCODE -ne 0) { throw 'pip resolution (dry-run --report) failed' }
-          python -m pip download --no-cache-dir -r ComfyUI\requirements.txt -c constraints.txt --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple --dest wheelhouse
+          python -m pip download --no-cache-dir -r ComfyUI\requirements.txt -c constraints.txt "torch==2.11.0+cu128" "torchvision==0.26.0+cu128" "torchaudio==2.11.0+cu128" --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple --dest wheelhouse
           $rc = $LASTEXITCODE; $sw.Stop()
           "wheelhouse download time: $([math]::Round($sw.Elapsed.TotalSeconds,1)) s | rc=$rc"
           if ($rc -ne 0) { throw "wheelhouse download failed rc=$rc" }
@@ -144,7 +149,7 @@ jobs:
         run: |
           $sw = [System.Diagnostics.Stopwatch]::StartNew()
           python -m venv venv
-          .\venv\Scripts\python -m pip install --no-cache-dir --no-index --find-links wheelhouse -r ComfyUI\requirements.txt -c constraints.txt
+          .\venv\Scripts\python -m pip install --no-cache-dir --no-index --find-links wheelhouse -r ComfyUI\requirements.txt -c constraints.txt "torch==2.11.0+cu128" "torchvision==0.26.0+cu128" "torchaudio==2.11.0+cu128"
           $rc = $LASTEXITCODE; $sw.Stop()
           "wheelhouse install time: $([math]::Round($sw.Elapsed.TotalSeconds,1)) s | rc=$rc"
           if ($rc -ne 0) { throw "wheelhouse install failed rc=$rc" }
