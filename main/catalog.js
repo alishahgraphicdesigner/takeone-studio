@@ -17,6 +17,10 @@
  * Size honesty: "sizeMB" is a planning estimate (spec §3). The download manager
  * reports REAL bytes from the server; estimates never drive progress bars.
  * "sizeBytes" when measured from a real file (SwinIR, GFPGAN, SAM2 below).
+ *
+ * unavailable: '<reason>' — the tool is listed for honesty but must NOT be
+ * offered for install until the reason clears (WO-6; evidence comes from WO-8).
+ * Its installBytes/firstRunBytes/installScope are null while withheld.
  */
 'use strict';
 const crypto = require('crypto');
@@ -149,8 +153,9 @@ const CATALOG = [
   {
     id: 'voice-studio', group: 'Voice',
     friendlyName: 'Voice Studio', technical: 'Chatterbox TTS',
-    installType: 'pip', pipPackage: 'chatterbox-tts==0.1.7', installBytes: 6469663154,
-    installScope: 'env-diff-with-deps', firstRunBytes: 3191966992,
+    installType: 'pip', pipPackage: 'chatterbox-tts==0.1.7', installBytes: null,
+    installScope: null, firstRunBytes: null,
+    unavailable: 'Not available yet: CI-measured (run 39242332869), the Windows pip install pulls CPU-only torch for chatterbox-tts==0.1.7 — the GPU voice path is unproven. Withheld until real Windows install + import evidence (WO-8).',
     url: null, fileName: null, sha256: null,
     sizeMB: 9214, vramMB: 4096,
     license: 'MIT', licenseNote: 'Free for commercial use.',
@@ -171,8 +176,8 @@ const CATALOG = [
   {
     id: 'transcribe', group: 'Audio',
     friendlyName: 'Transcribe', technical: 'faster-whisper (large-v3 model auto-download)',
-    installType: 'pip', pipPackage: 'faster-whisper==1.2.1', installBytes: 458964825,
-    installScope: 'env-diff-with-deps', firstRunBytes: 3090835362,
+    installType: 'pip', pipPackage: 'faster-whisper==1.2.1', installBytes: null,
+    installScope: null, firstRunBytes: null,
     url: null, fileName: null, sha256: null,
     sizeMB: 3385, vramMB: 4096,
     license: 'MIT', licenseNote: 'Free for commercial use.',
@@ -278,7 +283,9 @@ const CATALOG = [
   {
     id: 'erase', group: 'Edit',
     friendlyName: 'Erase', technical: 'LaMa (via lama-cleaner)',
-    installType: 'pip', pipPackage: 'lama-cleaner==1.2.5', installBytes: 10187687,
+    installType: 'pip', pipPackage: 'lama-cleaner==1.2.5', installBytes: null,
+    installScope: null, firstRunBytes: null,
+    unavailable: 'Not available yet: CI-measured (run 39242332869), the Windows pip install pulls CPU-only torch for lama-cleaner==1.2.5, and its in-app invocation is not wired. Withheld until real Windows install + import evidence (WO-8).',
     url: null, fileName: null, sha256: null,
     sizeMB: 200, vramMB: 2048,
     license: 'Apache-2.0', licenseNote: 'Free for commercial use.',
@@ -345,8 +352,8 @@ const CATALOG = [
   {
     id: 'voice-cleanup', group: 'Audio',
     friendlyName: 'Voice Cleanup', technical: 'DeepFilterNet',
-    installType: 'pip', pipPackage: 'deepfilternet==0.5.6', installBytes: 155333985,
-    installScope: 'env-diff-with-deps', firstRunBytes: 7986207,
+    installType: 'pip', pipPackage: 'deepfilternet==0.5.6', installBytes: null,
+    installScope: null, firstRunBytes: null,
     url: null, fileName: null, sha256: null,
     sizeMB: 156, vramMB: 0,
     license: 'MIT', licenseNote: 'Free for commercial use.',
@@ -369,8 +376,8 @@ const CATALOG = [
   {
     id: 'stem-split', group: 'Audio',
     friendlyName: 'Stem Split', technical: 'Demucs',
-    installType: 'pip', pipPackage: 'demucs==4.1.0', installBytes: 5728539677,
-    installScope: 'env-diff-with-deps', firstRunBytes: 84025440,
+    installType: 'pip', pipPackage: 'demucs==4.1.0', installBytes: null,
+    installScope: null, firstRunBytes: null,
     url: null, fileName: null, sha256: null,
     sizeMB: 5543, vramMB: 2048,
     license: 'MIT', licenseNote: 'Free for commercial use.',
