@@ -309,6 +309,13 @@ async function auditPip(t) {
 
 async function auditOne(t) {
   const base = { id: t.id, installType: t.installType, friendlyName: t.friendlyName };
+  // A tool marked `unavailable: '<reason>'` is NOT offered to users, so it cannot mislead them. It is listed, never hidden,
+  // and it does not block the gate. The reason must be a real sentence (not empty / not 'true').
+  if (t.unavailable) {
+    const ok = typeof t.unavailable === 'string' && t.unavailable.trim().length >= 20;
+    return { ...base, status: ok ? 'UNAVAILABLE' : 'MISMATCH', expected: {}, measured: {},
+      notes: [ok ? `not offered to users: ${t.unavailable}` : "unavailable must be a reason string (>= 20 chars): users and the audit need the WHY"] };
+  }
   try {
     let r;
     if (t.installType === 'file') {

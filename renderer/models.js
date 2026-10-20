@@ -17,6 +17,7 @@
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
   function badge(st) {
+    if (st.unavailable) return '<span class="badge bad">Not Available</span>';
     if (st.state === 'installed') return '<span class="badge ok">Installed</span>';
     if (st.state === 'failed') return '<span class="badge bad">Failed</span>';
     if (['downloading', 'verifying', 'installing', 'retrying'].includes(st.state)) return '<span class="badge working">Working</span>';
@@ -26,6 +27,7 @@
 
   function actionFor(tool, st) {
     const id = tool.id;
+    if (st.unavailable || tool.unavailable) return ''; // WO-12: Not Available — no Install button
     if (!st.gateOk) return ''; // gated cards show the reason box instead
     switch (st.state) {
       case 'installed':
@@ -76,6 +78,13 @@
     return `<div class="err"><b>Didn\u2019t work.</b> ${esc(st.error)}<br>Nothing was installed. You can try again — no files were left half-written.</div>`;
   }
 
+  // WO-12: a catalog `unavailable` reason is shown on the card, in plain words.
+  function unavailableFor(tool, st) {
+    const reason = st.unavailable || tool.unavailable;
+    if (!reason) return '';
+    return `<div class="gatereason"><b>Not Available.</b> ${esc(reason)}</div>`;
+  }
+
   function gateFor(tool, st) {
     if (st.gateOk) return '';
     return `<div class="gatereason"><b>Not available on this PC.</b> ${esc(st.gateReason)}
@@ -97,7 +106,9 @@
     return `<span title="At your measured speed of ${SPEED_MBPS} Mbps">≈ ${label} download</span>`;
   }
   function card(tool) {
-    const st = STATES[tool.id] || { state: 'not-installed', gateOk: true, deps: [] };
+    const st0 = STATES[tool.id] || { state: 'not-installed', gateOk: true, deps: [] };
+    // WO-12: fall back to the catalog copy's own field if the state predates it.
+    const st = tool.unavailable && !st0.unavailable ? { ...st0, unavailable: tool.unavailable } : st0;
     return `<div class="tcard${st.gateOk ? '' : ' gated'}" data-tool="${tool.id}">
       <div class="thead"><div><div class="tname">${esc(tool.friendlyName)}</div>
       <div class="ttech">powered by ${esc(tool.technical)}</div></div>${badge(st)}</div>
@@ -105,6 +116,7 @@
       <div class="tmeta"><span>${fmtMB(tool.sizeMB)}</span><span>${tool.vramMB === 0 ? 'CPU' : fmtMB(tool.vramMB) + ' VRAM'}</span><span>${esc(tool.license)}</span>${dlTime(tool)}</div>
       ${progressFor(tool, st)}
       ${errorFor(st)}
+      ${unavailableFor(tool, st)}
       ${gateFor(tool, st)}
       ${depsFor(tool, st)}
       <div class="actions">${actionFor(tool, st)}</div>

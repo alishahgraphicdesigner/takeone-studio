@@ -663,6 +663,10 @@ async function mergedToolStates(root) {
     else if (ts && ts.status === 'failed') { state = 'failed'; error = ts.error; }
     out[t.id] = {
       state, progress, error, detail,
+      // WO-12: catalog honesty reaches the UI — a tool marked unavailable in
+      // main/catalog.js surfaces here so the renderer can show "Not Available"
+      // and suppress its Install button.
+      unavailable: typeof t.unavailable === 'string' && t.unavailable ? t.unavailable : null,
       gateOk: gate.ok, gateReason: gate.reason || null, gateWhy: gate.whyLink || null,
       deps: IMPLICIT_DEPS[t.installType] || [],
       verifiedAt: (ts && ts.verifiedAt) || null,
