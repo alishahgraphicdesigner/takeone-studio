@@ -22,7 +22,7 @@ jobs:
           if (-not (Test-Path $tar)) { Write-Error "SHIPPED PYTHON TARBALL MISSING: $tar"; exit 1 }
           New-Item -ItemType Directory -Force -Path .shipped-py | Out-Null
           tar -xzf $tar -C .shipped-py
-          $py = Join-Path $PWD ".shipped-py/python.exe"
+          $py = (Get-ChildItem .shipped-py -Recurse -Filter python.exe | Select-Object -First 1).FullName
           if (-not (Test-Path $py)) {
             Write-Host "TREE:"; Get-ChildItem .shipped-py | Format-Table -AutoSize
             Write-Error "SHIPPED PYTHON LAYOUT: python.exe not found at $py"
