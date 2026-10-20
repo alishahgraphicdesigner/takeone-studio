@@ -14,6 +14,7 @@ on:
 jobs:
   logic-and-real-aria2-linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,13 +22,13 @@ jobs:
       - run: npm ci
       - run: npm test
       - name: Download manager logic tests (simulated aria2c)
-        run: chmod +x tests/mock-aria2c.js && node --test tests/downloads.behavior.test.js
+        run: chmod +x tests/mock-aria2c.js && node --test --test-timeout=120000 --test-reporter=spec tests/downloads.behavior.test.js
       - name: HF install-check + ensurePip regression tests
-        run: node --test tests/hf-install-check.test.js tests/deps-ensurepip.test.js
+        run: node --test --test-timeout=120000 --test-reporter=spec tests/hf-install-check.test.js tests/deps-ensurepip.test.js
       - name: Download manager vs REAL aria2c (local server)
         run: |
           sudo apt-get update && sudo apt-get install -y aria2
-          ARIA2C="$(which aria2c)" node --test tests/downloads.real-aria2.test.js
+          ARIA2C="$(which aria2c)" node --test --test-timeout=120000 --test-reporter=spec tests/downloads.real-aria2.test.js
       - name: Evidence fingerprint
         if: always()
         shell: bash
@@ -38,10 +39,11 @@ jobs:
             echo '```'
             git ls-files main.js package.json main tests tools .github | xargs sha256sum
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
   windows-installer:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -56,7 +58,7 @@ jobs:
         run: |
           if (-not (Test-Path resources/aria2c.exe)) { throw 'resources/aria2c.exe is missing in the repo checkout' }
           $env:ARIA2C = (Resolve-Path resources/aria2c.exe).Path
-          node --test tests/downloads.real-aria2.test.js
+          node --test --test-timeout=120000 --test-reporter=spec tests/downloads.real-aria2.test.js
 
       - name: Build installer
         id: build
@@ -122,6 +124,7 @@ jobs:
   pip-measure-windows:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_pip }}
     runs-on: windows-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
