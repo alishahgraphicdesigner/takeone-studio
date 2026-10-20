@@ -68,7 +68,7 @@ jobs:
         run: |
           @'
           import hashlib, json, os, sys
-          rep = json.load(open('pip-report.json'))
+          rep = json.load(open('pip-report.json', encoding='utf-8'))
           wheels = []
           seen = {}
           for item in rep.get('install', []):
@@ -78,11 +78,16 @@ jobs:
               path = os.path.join('wheelhouse', fname)
               if not os.path.exists(path):
                   print('LOCK FAIL: resolved wheel missing from wheelhouse:', fname); sys.exit(1)
-              data = open(path, 'rb').read()
-              sha = hashlib.sha256(data).hexdigest()
+              h = hashlib.sha256(); n = 0
+              with open(path, 'rb') as fh:
+                  while True:
+                      chunk = fh.read(1 << 20)
+                      if not chunk: break
+                      h.update(chunk); n += len(chunk)
+              sha = h.hexdigest()
               if rep_sha and rep_sha != sha:
                   print('LOCK FAIL: sha256 mismatch for', fname, 'report', rep_sha, 'file', sha); sys.exit(1)
-              wheels.append({'name': meta['name'], 'version': meta['version'], 'file': fname, 'url': url, 'bytes': len(data), 'sha256': sha})
+              wheels.append({'name': meta['name'], 'version': meta['version'], 'file': fname, 'url': url, 'bytes': n, 'sha256': sha})
               seen[fname] = True
           extra = [f for f in os.listdir('wheelhouse') if f not in seen]
           if extra:
@@ -92,7 +97,7 @@ jobs:
                   'constraints': {'torch': '2.11.0+cu128', 'torchvision': '0.26.0+cu128', 'torchaudio': '2.11.0+cu128'},
                   'comfyuiCommit': 'b1a247c9cf9dbfda4b2c0a0c1d50950667eeaa0c',
                   'wheelCount': len(wheels), 'totalBytes': sum(w['bytes'] for w in wheels), 'wheels': wheels}
-          json.dump(lock, open('engine-lock.json', 'w'), indent=2)
+          json.dump(lock, open('engine-lock.json', 'w', encoding='utf-8'), indent=2)
           print('engine-lock.json: %d wheels, %d bytes total' % (lock['wheelCount'], lock['totalBytes']))
           '@ | Set-Content -Path build-lock.py -Encoding ascii
           python build-lock.py
@@ -142,8 +147,12 @@ jobs:
         run: |
           $bytes = (Get-ChildItem venv -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
           "TOTAL venv size: $bytes bytes = $([math]::Round($bytes/1GB,2)) GiB"
-          $lock = Get-Content engine-lock.json -Raw | ConvertFrom-Json
-          "LOCK SUM: $($lock.wheelCount) wheels, $($lock.totalBytes) bytes total (engine-lock.json)"
+          if (Test-Path engine-lock.json) {
+            $lock = Get-Content engine-lock.json -Raw | ConvertFrom-Json
+            "LOCK SUM: $($lock.wheelCount) wheels, $($lock.totalBytes) bytes total (engine-lock.json)"
+          } else {
+            "LOCK SUM: engine-lock.json MISSING (the lock step failed above — see that step's log)"
+          }
 
       - name: Evidence fingerprint
         if: always()
