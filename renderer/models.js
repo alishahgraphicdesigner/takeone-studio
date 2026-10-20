@@ -17,7 +17,7 @@
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
   function badge(st) {
-    if (st.unavailable) return '<span class="badge bad">Not Available</span>';
+    if (st.unavailable || st.unavailableUser) return '<span class="badge coming">Coming soon</span>';
     if (st.state === 'installed') return '<span class="badge ok">Installed</span>';
     if (st.state === 'failed') return '<span class="badge bad">Failed</span>';
     if (['downloading', 'verifying', 'installing', 'retrying'].includes(st.state)) return '<span class="badge working">Working</span>';
@@ -78,11 +78,12 @@
     return `<div class="err"><b>Didn\u2019t work.</b> ${esc(st.error)}<br>Nothing was installed. You can try again — no files were left half-written.</div>`;
   }
 
-  // WO-12: a catalog `unavailable` reason is shown on the card, in plain words.
+  // WO-16: only the plain-language user text is shown — dev wording never reaches the user.
   function unavailableFor(tool, st) {
-    const reason = st.unavailable || tool.unavailable;
-    if (!reason) return '';
-    return `<div class="gatereason"><b>Not Available.</b> ${esc(reason)}</div>`;
+    const msg = st.unavailableUser || tool.unavailableUser;
+    const isU = st.unavailable || tool.unavailable;
+    if (!isU && !msg) return '';
+    return `<div class="soonbox"><b>Coming soon.</b> ${esc(msg || 'Coming soon.')}</div>`;
   }
 
   function gateFor(tool, st) {
@@ -142,7 +143,8 @@
       if (seen[t.group]) continue;
       seen[t.group] = true;
       const anyInstalled = CAT.some((x) => x.group === t.group && (STATES[x.id] || {}).state === 'installed');
-      if (!anyInstalled && (STATES[t.id] || {}).gateOk !== false) missing.push(t.group);
+      const isUn = (STATES[t.id] || {}).unavailable || t.unavailable;
+      if (!anyInstalled && !isUn && (STATES[t.id] || {}).gateOk !== false) missing.push(t.group);
     }
     if (!missing.length) return '';
     return `<div class="suggest"><b>Complete your pipeline</b>
@@ -277,7 +279,8 @@
       const el = $('#diskMeter');
       if (!el) return;
       if (free === null) { el.innerHTML = '<span class="mtext">Disk space: could not measure.</span>'; return; }
-      const totalEst = CAT.filter((t) => (STATES[t.id] || {}).state === 'not-installed')
+      const totalEst = CAT.filter((t) => (STATES[t.id] || {}).state === 'not-installed'
+        && !(STATES[t.id] || {}).unavailable && !t.unavailable)
         .reduce((s, t) => s + t.sizeMB, 0) / 1024;
       el.innerHTML = `<span class="mtext"><b>${free.toFixed(1)} GB</b> free on this drive.</span>
         <div class="meter" role="progressbar" aria-valuenow="${Math.round(totalEst)}" aria-valuemin="0" aria-valuemax="${Math.round(free)}" aria-label="Estimated space for all remaining tools versus free disk space"><i style="width:${Math.min(100, (totalEst / Math.max(free, 1)) * 100)}%"></i></div>

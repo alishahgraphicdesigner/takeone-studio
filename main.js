@@ -667,6 +667,8 @@ async function mergedToolStates(root) {
       // main/catalog.js surfaces here so the renderer can show "Not Available"
       // and suppress its Install button.
       unavailable: typeof t.unavailable === 'string' && t.unavailable ? t.unavailable : null,
+      // WO-16: plain-language user text (the only text the UI shows).
+      unavailableUser: typeof t.unavailableUser === 'string' && t.unavailableUser ? t.unavailableUser : null,
       gateOk: gate.ok, gateReason: gate.reason || null, gateWhy: gate.whyLink || null,
       deps: IMPLICIT_DEPS[t.installType] || [],
       verifiedAt: (ts && ts.verifiedAt) || null,
