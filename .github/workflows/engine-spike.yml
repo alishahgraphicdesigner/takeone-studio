@@ -68,12 +68,13 @@ jobs:
         run: |
           @'
           import hashlib, json, os, sys
+          from urllib.parse import unquote
           rep = json.load(open('pip-report.json', encoding='utf-8'))
           wheels = []
           seen = {}
           for item in rep.get('install', []):
               meta = item['metadata']; di = item['download_info']
-              url = di['url']; fname = url.split('/')[-1]
+              url = di['url']; fname = unquote(url.split('/')[-1])
               rep_sha = (di.get('archive_info', {}).get('hashes', {}) or {}).get('sha256') or di.get('archive_info', {}).get('hash')
               path = os.path.join('wheelhouse', fname)
               if not os.path.exists(path):
