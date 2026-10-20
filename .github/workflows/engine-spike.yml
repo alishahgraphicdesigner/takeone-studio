@@ -1,0 +1,75 @@
+# TakeOne Studio — ComfyUI engine install spike (Windows, no GPU).
+# WO-7. Status: Implemented, NOT RUN yet. Not Tested until its first green run.
+# Goal: on a clean CI machine, install the engine (torch cu128 pinned + a pinned
+# ComfyUI commit), boot it with --quick-test-for-ci, and report honest numbers:
+# total env size (total, not delta), install time, pip check, boot exit code.
+# Failures are reported raw, never hidden.
+name: engine-spike
+on:
+  workflow_dispatch:
+
+jobs:
+  comfyui-engine-spike:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      - name: Create venv + install torch (cu128, exact pin)
+        shell: pwsh
+        run: |
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          python -m venv venv
+          .\venv\Scripts\python -m pip install --no-cache-dir "torch==2.11.0+cu128" "torchaudio==2.11.0+cu128" --index-url https://download.pytorch.org/whl/cu128
+          if ($LASTEXITCODE -ne 0) { throw 'torch cu128 pre-install failed' }
+          .\venv\Scripts\python -c "import torch, torchaudio; print('torch', torch.__version__, '| cuda', torch.version.cuda, '| torchaudio', torchaudio.__version__)"
+          $sw.Stop(); "torch cu128 install time: $([math]::Round($sw.Elapsed.TotalSeconds,1)) s"
+
+      - name: Download ComfyUI (pinned commit + sha256 check)
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/comfyanonymous/ComfyUI/archive/b1a247c9cf9dbfda4b2c0a0c1d50950667eeaa0c.zip'
+          Invoke-WebRequest -Uri $url -OutFile comfyui.zip
+          $h = (Get-FileHash comfyui.zip -Algorithm SHA256).Hash.ToLower()
+          $exp = '14d2ffe3775d656ebe3d9a6f684b5f1874ac89992ca296ee3c4646c14ebe4e1e'
+          "comfyui.zip bytes: $((Get-Item comfyui.zip).Length) | sha256: $h"
+          if ($h -ne $exp) { throw "ComfyUI zip sha256 mismatch: got $h, expected $exp" }
+          Expand-Archive comfyui.zip -DestinationPath .
+          Rename-Item 'ComfyUI-b1a247c9cf9dbfda4b2c0a0c1d50950667eeaa0c' 'ComfyUI'
+          "ComfyUI license: GPL-3.0 (LICENSE file = GNU General Public License v3)"
+
+      - name: Install ComfyUI requirements
+        shell: pwsh
+        run: |
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          .\venv\Scripts\python -m pip install --no-cache-dir -r ComfyUI\requirements.txt
+          $rc = $LASTEXITCODE; $sw.Stop()
+          "requirements install time: $([math]::Round($sw.Elapsed.TotalSeconds,1)) s | rc=$rc"
+          if ($rc -ne 0) { throw "ComfyUI requirements install failed rc=$rc" }
+
+      - name: pip check + torch version after requirements
+        shell: pwsh
+        run: |
+          .\venv\Scripts\python -m pip check
+          $pc = $LASTEXITCODE
+          "pip check rc=$pc (0 = clean)"
+          .\venv\Scripts\python -c "import torch; print('torch after requirements:', torch.__version__, '| cuda', torch.version.cuda)"
+
+      - name: Boot test (--cpu --quick-test-for-ci)
+        shell: pwsh
+        run: |
+          Push-Location ComfyUI
+          ..\venv\Scripts\python main.py --cpu --quick-test-for-ci
+          $rc = $LASTEXITCODE
+          Pop-Location
+          "ComfyUI boot exit code: $rc"
+          if ($rc -ne 0) { throw "ComfyUI boot FAILED rc=$rc" }
+          "ComfyUI boot PASSED (exit 0 after full init, no GPU)"
+
+      - name: Total env size (total, not delta)
+        if: always()
+        shell: pwsh
+        run: |
+          $bytes = (Get-ChildItem venv -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+          "TOTAL venv size: $bytes bytes = $([math]::Round($bytes/1GB,2)) GiB"
