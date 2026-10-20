@@ -1,9 +1,19 @@
 # TakeOne Studio — ComfyUI engine install spike (Windows, no GPU).
-# WO-7. Status: Implemented, NOT RUN yet. Not Tested until its first green run.
-# Goal: on a clean CI machine, install the engine (torch cu128 pinned + a pinned
-# ComfyUI commit), boot it with --quick-test-for-ci, and report honest numbers:
-# total env size (total, not delta), install time, pip check, boot exit code.
-# Failures are reported raw, never hidden.
+# WO-7: first spike. Raw finding then: the torch cu128 pin was SILENTLY
+# REPLACED by ComfyUI requirements (unpinned torch/torchvision from PyPI).
+# WO-11: the engine env is now HASH-PINNED end to end:
+#   1. constraints.txt pins torch/torchvision/torchaudio to exact cu128 builds.
+#   2. pip resolves ComfyUI's requirements against those constraints and
+#      downloads every wheel into a wheelhouse (nothing installs yet).
+#   3. engine-lock.json is built from pip's own resolution report AND the
+#      actual downloaded files: per wheel {url, bytes, sha256}; any mismatch
+#      between the report and a downloaded wheel FAILS the build.
+#   4. A FRESH venv installs ONLY from the wheelhouse
+#      (--no-index --find-links), so no network package can substitute.
+#   5. Hard assert: torch.version.cuda == '12.8', else the build FAILS.
+#   6. ComfyUI boots with --cpu --quick-test-for-ci; exit must be 0.
+# engine-lock.json is uploaded as an artifact (it is committed to the repo
+# from that artifact by Muse; the workflow itself has read-only contents).
 name: engine-spike
 on:
   workflow_dispatch:
@@ -13,18 +23,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
-
-      - name: Create venv + install torch (cu128, exact pin)
-        shell: pwsh
-        run: |
-          $sw = [System.Diagnostics.Stopwatch]::StartNew()
-          python -m venv venv
-          .\venv\Scripts\python -m pip install --no-cache-dir "torch==2.11.0+cu128" "torchaudio==2.11.0+cu128" --index-url https://download.pytorch.org/whl/cu128
-          if ($LASTEXITCODE -ne 0) { throw 'torch cu128 pre-install failed' }
-          .\venv\Scripts\python -c "import torch, torchaudio; print('torch', torch.__version__, '| cuda', torch.version.cuda, '| torchaudio', torchaudio.__version__)"
-          $sw.Stop(); "torch cu128 install time: $([math]::Round($sw.Elapsed.TotalSeconds,1)) s"
 
       - name: Download ComfyUI (pinned commit + sha256 check)
         shell: pwsh
@@ -39,22 +40,90 @@ jobs:
           Rename-Item 'ComfyUI-b1a247c9cf9dbfda4b2c0a0c1d50950667eeaa0c' 'ComfyUI'
           "ComfyUI license: GPL-3.0 (LICENSE file = GNU General Public License v3)"
 
-      - name: Install ComfyUI requirements
+      - name: Write constraints (exact cu128 pins for the torch trio)
+        shell: pwsh
+        run: |
+          @'
+          torch==2.11.0+cu128
+          torchvision==0.26.0+cu128
+          torchaudio==2.11.0+cu128
+          '@ | Set-Content -Path constraints.txt -Encoding ascii
+          Get-Content constraints.txt
+
+      - name: Resolve + download wheelhouse (installs nothing yet)
         shell: pwsh
         run: |
           $sw = [System.Diagnostics.Stopwatch]::StartNew()
-          .\venv\Scripts\python -m pip install --no-cache-dir -r ComfyUI\requirements.txt
+          python -m pip install --dry-run --report pip-report.json --no-cache-dir -r ComfyUI\requirements.txt -c constraints.txt --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
+          if ($LASTEXITCODE -ne 0) { throw 'pip resolution (dry-run --report) failed' }
+          python -m pip download --no-cache-dir -r ComfyUI\requirements.txt -c constraints.txt --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple --dest wheelhouse
           $rc = $LASTEXITCODE; $sw.Stop()
-          "requirements install time: $([math]::Round($sw.Elapsed.TotalSeconds,1)) s | rc=$rc"
-          if ($rc -ne 0) { throw "ComfyUI requirements install failed rc=$rc" }
+          "wheelhouse download time: $([math]::Round($sw.Elapsed.TotalSeconds,1)) s | rc=$rc"
+          if ($rc -ne 0) { throw "wheelhouse download failed rc=$rc" }
+          $wb = (Get-ChildItem wheelhouse -File | Measure-Object Length -Sum).Sum
+          "wheelhouse: $((Get-ChildItem wheelhouse -File).Count) files, $wb bytes total"
 
-      - name: pip check + torch version after requirements
+      - name: Build engine-lock.json (report cross-checked against downloaded wheels)
         shell: pwsh
         run: |
+          @'
+          import hashlib, json, os, sys
+          rep = json.load(open('pip-report.json'))
+          wheels = []
+          seen = {}
+          for item in rep.get('install', []):
+              meta = item['metadata']; di = item['download_info']
+              url = di['url']; fname = url.split('/')[-1]
+              rep_sha = (di.get('archive_info', {}).get('hashes', {}) or {}).get('sha256') or di.get('archive_info', {}).get('hash')
+              path = os.path.join('wheelhouse', fname)
+              if not os.path.exists(path):
+                  print('LOCK FAIL: resolved wheel missing from wheelhouse:', fname); sys.exit(1)
+              data = open(path, 'rb').read()
+              sha = hashlib.sha256(data).hexdigest()
+              if rep_sha and rep_sha != sha:
+                  print('LOCK FAIL: sha256 mismatch for', fname, 'report', rep_sha, 'file', sha); sys.exit(1)
+              wheels.append({'name': meta['name'], 'version': meta['version'], 'file': fname, 'url': url, 'bytes': len(data), 'sha256': sha})
+              seen[fname] = True
+          extra = [f for f in os.listdir('wheelhouse') if f not in seen]
+          if extra:
+              print('LOCK FAIL: wheelhouse holds files the resolution did not ask for:', extra); sys.exit(1)
+          wheels.sort(key=lambda w: w['name'].lower())
+          lock = {'schema': 1, 'python': '3.11', 'index': 'https://download.pytorch.org/whl/cu128', 'extraIndex': 'https://pypi.org/simple',
+                  'constraints': {'torch': '2.11.0+cu128', 'torchvision': '0.26.0+cu128', 'torchaudio': '2.11.0+cu128'},
+                  'comfyuiCommit': 'b1a247c9cf9dbfda4b2c0a0c1d50950667eeaa0c',
+                  'wheelCount': len(wheels), 'totalBytes': sum(w['bytes'] for w in wheels), 'wheels': wheels}
+          json.dump(lock, open('engine-lock.json', 'w'), indent=2)
+          print('engine-lock.json: %d wheels, %d bytes total' % (lock['wheelCount'], lock['totalBytes']))
+          '@ | Set-Content -Path build-lock.py -Encoding ascii
+          python build-lock.py
+          if ($LASTEXITCODE -ne 0) { throw 'engine-lock.json build failed' }
+
+      - name: Upload engine-lock.json
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-lock
+          path: engine-lock.json
+
+      - name: Fresh venv — install ONLY from the wheelhouse (--no-index)
+        shell: pwsh
+        run: |
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          python -m venv venv
+          .\venv\Scripts\python -m pip install --no-cache-dir --no-index --find-links wheelhouse -r ComfyUI\requirements.txt -c constraints.txt
+          $rc = $LASTEXITCODE; $sw.Stop()
+          "wheelhouse install time: $([math]::Round($sw.Elapsed.TotalSeconds,1)) s | rc=$rc"
+          if ($rc -ne 0) { throw "wheelhouse install failed rc=$rc" }
           .\venv\Scripts\python -m pip check
-          $pc = $LASTEXITCODE
-          "pip check rc=$pc (0 = clean)"
-          .\venv\Scripts\python -c "import torch; print('torch after requirements:', torch.__version__, '| cuda', torch.version.cuda)"
+          if ($LASTEXITCODE -ne 0) { throw 'pip check failed' }
+          "pip check rc=0 (clean)"
+
+      - name: Assert the GPU torch survived (torch.version.cuda == 12.8, else FAIL)
+        shell: pwsh
+        run: |
+          .\venv\Scripts\python -c "import torch, torchvision, torchaudio; print('torch', torch.__version__, '| cuda', torch.version.cuda, '| torchvision', torchvision.__version__, '| torchaudio', torchaudio.__version__); assert torch.version.cuda == '12.8', 'torch.version.cuda is %r, expected 12.8 — the cu128 pin did NOT survive' % (torch.version.cuda,)"
+          if ($LASTEXITCODE -ne 0) { throw 'cu128 survival assert FAILED — build fails here, by design (WO-11)' }
+          "cu128 assert PASSED: torch.version.cuda == 12.8"
 
       - name: Boot test (--cpu --quick-test-for-ci)
         shell: pwsh
@@ -73,3 +142,17 @@ jobs:
         run: |
           $bytes = (Get-ChildItem venv -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
           "TOTAL venv size: $bytes bytes = $([math]::Round($bytes/1GB,2)) GiB"
+          $lock = Get-Content engine-lock.json -Raw | ConvertFrom-Json
+          "LOCK SUM: $($lock.wheelCount) wheels, $($lock.totalBytes) bytes total (engine-lock.json)"
+
+      - name: Evidence fingerprint
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Evidence fingerprint"
+            echo "commit: $GITHUB_SHA"
+            echo '```'
+            git ls-files main.js package.json main tests tools .github | xargs sha256sum
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
