@@ -143,8 +143,11 @@
       if (seen[t.group]) continue;
       seen[t.group] = true;
       const anyInstalled = CAT.some((x) => x.group === t.group && (STATES[x.id] || {}).state === 'installed');
-      const isUn = (STATES[t.id] || {}).unavailable || t.unavailable;
-      if (!anyInstalled && !isUn && (STATES[t.id] || {}).gateOk !== false) missing.push(t.group);
+      // WO-16 fix: a group is suggested only if it still has an OFFERED tool —
+      // a coming-soon group must vanish, but a group with an offered tool stays.
+      const grp = CAT.filter((x) => x.group === t.group);
+      const offeredGrp = grp.filter((x) => !(STATES[x.id] || {}).unavailable && !x.unavailable);
+      if (offeredGrp.length && !anyInstalled && (STATES[t.id] || {}).gateOk !== false) missing.push(t.group);
     }
     if (!missing.length) return '';
     return `<div class="suggest"><b>Complete your pipeline</b>
