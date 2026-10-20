@@ -115,4 +115,20 @@ test('E. corrupt data: clear failure, no silent restart', async () => {
   assert.match(m.getState('brain').error, /checksum|corrupt/i);
   await sleep(1500); assert.ok((s.served['/brain.bin'] || 0) <= size * 1.02, 'it silently downloaded the file again');
 });
+test('F. cancel leaves no partial/.aria2 in staging — 30 iterations (WO-10)', { timeout: 900000 }, async () => {
+  const size = 12 * MB; const { s, root } = await setup({ '/loop.bin': { size, seed: 42 } });
+  const m = await mgr(root, s);
+  for (let i = 0; i < 30; i++) {
+    const id = 'loop' + i;
+    const tool = { id, installType: 'file', url: `${s.base}/loop.bin`, fileName: 'loop.bin', sizeBytes: size, sha256: shaOfPattern(size, 42), category: 'text' };
+    await m.addDownload(tool);
+    await waitFor(() => m.getState(id).progress > 0.05, 30000, 'progress iter ' + i);
+    const r = await m.cancel(id);
+    assert.strictEqual(r.ok, true, `iter ${i}: cancel returned not-ok`);
+    assert.strictEqual(m.getState(id).status, 'cancelled', `iter ${i}: status must be cancelled`);
+    const partial = path.join(root, '.staging', 'downloads', 'loop.bin');
+    assert.ok(!has(partial), `iter ${i}: partial file remained in staging after cancel`);
+    assert.ok(!has(partial + '.aria2'), `iter ${i}: .aria2 control file remained in staging after cancel`);
+  }
+});
 console.log(IS_REAL ? '[using REAL aria2c: ' + ARIA2C + ']' : '[using the SIMULATOR — harness check only]');

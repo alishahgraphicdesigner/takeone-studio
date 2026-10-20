@@ -471,6 +471,33 @@ class DownloadManager {
     return { ok: true };
   }
 
+  /** WO-10: wait until aria2 itself reports this download 'removed' (max 3 s).
+   *  forceRemove returns before aria2 has necessarily let go of the file;
+   *  deleting immediately races aria2's last write/flush and the partial (or
+   *  its .aria2 control file) can reappear in staging after cancel() returns.
+   *  A tellStatus error (unknown GID) also means: already gone. */
+  async _waitUntilRemoved(gid, maxMs = 3000) {
+    const t0 = Date.now();
+    for (;;) {
+      try {
+        const st = await this.rpc('tellStatus', [gid]);
+        if (st && st.status === 'removed') return true;
+      } catch { return true; } // unknown GID = already removed
+      if (Date.now() - t0 >= maxMs) return false;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
+  /** WO-10: delete a file, then VERIFY it is gone; retry up to 3 times (200 ms gap). */
+  async _deleteVerified(p) {
+    for (let attempt = 0; attempt <= 3; attempt++) {
+      try { await fsp.unlink(p); } catch { /* already gone is fine */ }
+      if (!(await exists(p))) return true;
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 200));
+    }
+    return !(await exists(p));
+  }
+
   /** Cancel is instant for the user (state flips first); the partial file of THIS download is discarded.
    *  Files of an HF job that were already verified stay and are reused by the next install. */
   async cancel(toolId) {
@@ -480,7 +507,11 @@ class DownloadManager {
     e.status = 'cancelled'; e.gid = null; e.progress = 0; e.pauseHeld = false;
     this.emit('state', { toolId, state: 'cancelled' });
     await this.persist();
-    if (gid) { try { await this.rpc('forceRemove', [gid]); } catch { try { await this.rpc('remove', [gid]); } catch { /* already gone */ } } }
+    if (gid) {
+      try { await this.rpc('forceRemove', [gid]); } catch { try { await this.rpc('remove', [gid]); } catch { /* already gone */ } }
+      // WO-10: only delete AFTER aria2 confirms 'removed' (or the GID is gone), max 3 s.
+      await this._waitUntilRemoved(gid);
+    }
     const partial = e.isHf ? e.currentFileName : e.fileName;
     // Ali verdict 2026-10-17: cancel = delete the ACTIVE partial only (disk freed);
     // verified HF files stay and are reused by the next install. Report freed bytes to the UI.
@@ -488,7 +519,7 @@ class DownloadManager {
     if (partial) for (const s of ['', '.aria2']) {
       const p = path.join(this.stagingDir(), partial + s);
       try { freedBytes += (await fsp.stat(p)).size; } catch { /* missing — nothing freed */ }
-      try { await fsp.unlink(p); } catch { /* ignore */ }
+      await this._deleteVerified(p); // WO-10: exists-checked delete, 3 retries @ 200 ms
     }
     this.emit('state', { toolId, state: 'cancelled', freedBytes });
     return { ok: true, freedBytes };
