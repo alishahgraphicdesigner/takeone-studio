@@ -1,7 +1,7 @@
 /* TakeOne Studio 2.2.0 — Phase B integration tests: DownloadManager against a
  * REAL aria2c (system binary on Linux) and a local HTTP file server with
  * Range support. Run: node --test test/downloads.test.js */
-const { describe, it, before, after } = require('node:test');
+const { describe, it, before, after, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -61,6 +61,11 @@ function startServer() {
   });
 }
 
+// WO-13: every manager created by a test is registered here and stopped in
+// afterEach — a failed assertion mid-test must never skip mgr.stop() and leave
+// a real aria2c child process + open sockets holding the test process open.
+const liveManagers = new Set();
+
 function mkManager() {
   const events = [];
   const mgr = new DownloadManager({
@@ -70,6 +75,7 @@ function mkManager() {
     onEvent: (type, data) => events.push({ type, ...data }),
   });
   mgr.events = events;
+  liveManagers.add(mgr);
   return mgr;
 }
 
@@ -92,6 +98,11 @@ describe('DownloadManager (real aria2c)', { skip: !HAS_ARIA2C }, () => {
   before(async () => {
     await startServer();
     tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'takeone-dl-'));
+  });
+  // WO-13: mgr.stop() ALWAYS runs, pass or fail (try/finally equivalent via afterEach).
+  afterEach(async () => {
+    for (const m of liveManagers) { try { await m.stop(); } catch { /* already stopped */ } }
+    liveManagers.clear();
   });
   after(async () => {
     for (const s of sockets) { try { s.destroy(); } catch { /* ignore */ } }

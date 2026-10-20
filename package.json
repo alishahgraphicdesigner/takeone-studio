@@ -61,7 +61,7 @@
   "scripts": {
     "dist": "node build/dist.js",
     "start": "electron .",
-    "test": "node --test test/*.test.js"
+    "test": "node --test --test-timeout=120000 test/*.test.js"
   },
   "version": "2.2.9",
   "devDependencies": {
