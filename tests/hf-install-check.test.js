@@ -24,7 +24,7 @@ function world(files) {
   return { dir, manifest };
 }
 
-test('complete: all files byte-exact -> complete true', async () => {
+test('complete: all files byte-exact -> complete true (default AND deep)', async () => {
   const { dir, manifest } = world([
     { rel: 'model.safetensors', data: pattern(1024, 1), sha: true },
     { rel: 'sub/config.json', data: pattern(100, 2), sha: true },
@@ -33,6 +33,10 @@ test('complete: all files byte-exact -> complete true', async () => {
   assert.strictEqual(r.complete, true);
   assert.strictEqual(r.checked, 2);
   assert.strictEqual(r.bad, null);
+  const rd = await hfInstalledStatus(dir, manifest, { deep: true });
+  assert.strictEqual(rd.complete, true);
+  assert.strictEqual(rd.checked, 2);
+  assert.strictEqual(rd.bad, null);
 });
 
 test('half-downloaded: one file truncated -> complete FALSE (not installed)', async () => {
@@ -53,12 +57,24 @@ test('missing file -> complete false', async () => {
   assert.match(r.bad, /missing/);
 });
 
-test('checksum mismatch -> complete false', async () => {
+test('checksum mismatch -> complete false (deep only; WO-4)', async () => {
   const { dir, manifest } = world([{ rel: 'a.bin', data: pattern(64, 5), sha: true }]);
   manifest[0].sha256 = '0'.repeat(64); // wrong checksum on purpose
-  const r = await hfInstalledStatus(dir, manifest);
+  const r = await hfInstalledStatus(dir, manifest, { deep: true });
   assert.strictEqual(r.complete, false);
   assert.match(r.bad, /checksum/);
+});
+
+test('WO-4 acceptance: right size + wrong content -> default complete true, deep false', async () => {
+  // On disk: 128 bytes of pattern(…,9). Manifest expects the SAME length but
+  // the sha256 of DIFFERENT content (pattern(…,7)) — size right, content wrong.
+  const { dir, manifest } = world([{ rel: 'model.safetensors', data: pattern(128, 9), sha: false }]);
+  manifest[0].sha256 = sha(pattern(128, 7));
+  const fast = await hfInstalledStatus(dir, manifest); // default: stat-only
+  assert.strictEqual(fast.complete, true, 'default (stat-only) must accept exact size without hashing');
+  const deep = await hfInstalledStatus(dir, manifest, { deep: true });
+  assert.strictEqual(deep.complete, false, 'deep must reject wrong content via sha256');
+  assert.match(deep.bad, /checksum/);
 });
 
 test('empty manifest -> complete false', async () => {
