@@ -83,7 +83,7 @@
     const msg = st.unavailableUser || tool.unavailableUser;
     const isU = st.unavailable || tool.unavailable;
     if (!isU && !msg) return '';
-    return `<div class="soonbox"><b>Coming soon.</b> ${esc(msg || 'Coming soon.')}</div>`;
+    return `<div class="soonbox">${esc(msg || 'Coming soon.')}</div>`;
   }
 
   function gateFor(tool, st) {
