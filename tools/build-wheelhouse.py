@@ -17,20 +17,20 @@ def main() -> int:
     os.makedirs(dest_dir, exist_ok=True)
     bad = 0
     for w in lock["wheels"]:
-        dest = os.path.join(dest_dir, w["filename"])
+        dest = os.path.join(dest_dir, w["file"])
         have = (
             os.path.exists(dest)
             and os.path.getsize(dest) == w["bytes"]
             and hashlib.sha256(open(dest, "rb").read()).hexdigest() == w["sha256"]
         )
         if have:
-            print("have", w["filename"])
+            print("have", w["file"])
             continue
-        print("fetch", w["filename"], flush=True)
+        print("fetch", w["file"], flush=True)
         urllib.request.urlretrieve(w["url"], dest)
         h = hashlib.sha256(open(dest, "rb").read()).hexdigest()
         if h != w["sha256"] or os.path.getsize(dest) != w["bytes"]:
-            print("LOCK MISMATCH:", w["filename"])
+            print("LOCK MISMATCH:", w["file"])
             bad += 1
     print("wheels:", len(lock["wheels"]), "mismatches:", bad)
     return 1 if bad else 0
