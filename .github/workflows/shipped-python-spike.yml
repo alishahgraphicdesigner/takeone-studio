@@ -1,84 +1,78 @@
 name: shipped-python-spike
-# WO-19: engine lock ko SHIPPED Python par sabit karo (CI, Windows).
-# resources/python-3.11.17-windows-x86_64-install_only_stripped.tar.gz extract,
-# us ke python se -m venv, engine-lock.json ke wheelhouse se --no-index install,
-# torch.version.cuda == '12.8' assert, ComfyUI boot exit 0.
-# Agar venv/ensurepip missing hai to isay FAILED likha jata hai (raw log ke saath).
+# WO-19 + WO-23: the engine lock proven on the SHIPPED Python (CI, Windows) —
+# now through the REAL main/engine.js installEngine() (no UI), not inline steps.
+# resources/python-3.11.17-windows-x86_64-install_only_stripped.tar.gz is placed
+# at <root>/.python (the layout the app itself uses), then installEngine does:
+# manifest download (87 files, sha256) -> venv from the shipped python ->
+# per-wheel pip install -> pip check -> torch.version.cuda == '12.8' assert ->
+# ComfyUI extract -> wheelhouse deleted. ComfyUI boots --cpu at the end.
+# TAKEONE_SKIP_GPU_CHECK=1 because GitHub runners have no NVIDIA GPU
+# (the three GPU failure kinds are unit-tested; the real GPU path is proven
+# on the user's own PC).
 on:
   workflow_dispatch:
 
 jobs:
   shipped-python:
     runs-on: windows-latest
+    timeout-minutes: 240
     defaults:
       run:
         shell: pwsh
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract shipped Python
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      - name: Smoke check — engine-lock.json ships in the app (build.files)
+        run: |
+          if (-not (Test-Path "engine-lock.json")) { Write-Error "engine-lock.json missing from repo root — it must ship in build.files."; exit 1 }
+          node -e "const l=require('./engine-lock.json'); if(l.wheels.length!==86) throw new Error('wheel count'); console.log('engine-lock.json OK:', l.wheels.length, 'wheels')"
+
+      - name: Place shipped Python at <root>/.python
         run: |
           $tar = "resources/python-3.11.17-windows-x86_64-install_only_stripped.tar.gz"
           if (-not (Test-Path $tar)) { Write-Error "SHIPPED PYTHON TARBALL MISSING: $tar"; exit 1 }
-          New-Item -ItemType Directory -Force -Path .shipped-py | Out-Null
-          tar -xzf $tar -C .shipped-py
-          $py = (Get-ChildItem .shipped-py -Recurse -Filter python.exe | Select-Object -First 1).FullName
-          if (-not (Test-Path $py)) {
-            Write-Host "TREE:"; Get-ChildItem .shipped-py | Format-Table -AutoSize
-            Write-Error "SHIPPED PYTHON LAYOUT: python.exe not found at $py"
-            exit 1
+          New-Item -ItemType Directory -Force -Path .spike-root | Out-Null
+          tar -xzf $tar -C .spike-root
+          # tarball layout lesson (WO-19): real content lives under a python/ subdir
+          $inner = Get-ChildItem .spike-root -Directory | Where-Object { Test-Path (Join-Path $_.FullName "python.exe") } | Select-Object -First 1
+          if (-not $inner) {
+            Write-Host "TREE:"; Get-ChildItem .spike-root | Format-Table -AutoSize
+            Write-Error "SHIPPED PYTHON LAYOUT: python.exe not found after extract"; exit 1
           }
-          & $py --version
-          echo "SHIPPED_PY=$py" >> $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force -Path .spike-root/.python | Out-Null
+          Get-ChildItem $inner.FullName | Move-Item -Destination .spike-root/.python -Force
+          & .spike-root/.python/python.exe --version
 
-      - name: Make venv with the SHIPPED python (WO-19 gate)
+      - name: Real installEngine() (no UI)
         run: |
-          & $env:SHIPPED_PY -m venv .spike-venv 2>&1 | Tee-Object -FilePath venv-create.log
+          $env:TAKEONE_SPIKE_ROOT = Join-Path $PWD ".spike-root"
+          $env:TAKEONE_ARIA2 = Join-Path $PWD "resources/aria2c.exe"
+          $env:TAKEONE_SKIP_GPU_CHECK = "1"
+          if (-not (Test-Path $env:TAKEONE_ARIA2)) { Write-Error "aria2c.exe missing: $($env:TAKEONE_ARIA2)"; exit 1 }
+          node tools/spike-install-engine.js 2>&1 | Tee-Object -FilePath spike-install.log
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "RAW venv-create.log:"; Get-Content venv-create.log
-            Write-Error "FAILED: -m venv exited $LASTEXITCODE with the shipped python (ensurepip missing or other). Raw log above."
+            Write-Host "RAW spike-install.log tail:"; Get-Content spike-install.log -Tail 40
+            Write-Error "INSTALLENGINE FAILED (raw log above)"
             exit 1
           }
-          $vpy = Join-Path $PWD ".spike-venv/Scripts/python.exe"
-          if (-not (Test-Path $vpy)) {
-            Write-Host "RAW venv-create.log:"; Get-Content venv-create.log
-            Write-Error "FAILED: venv dir created but Scripts/python.exe missing — venv/ensurepip incomplete. Raw log above."
-            exit 1
-          }
-          echo "VENV_PY=$vpy" >> $env:GITHUB_ENV
-          & $vpy --version
+        timeout-minutes: 180
 
-      - name: Rebuild wheelhouse from engine-lock.json (sha256-verified)
+      - name: ComfyUI boot (exit 0, --cpu)
         run: |
-          python tools/build-wheelhouse.py wheelhouse
-          if ($LASTEXITCODE -ne 0) { Write-Error "WHEELHOUSE LOCK MISMATCH"; exit 1 }
-
-      - name: Install lock into shipped-python venv (--no-index)
-        run: |
-          $specs = (Get-Content engine-lock.json | ConvertFrom-Json).wheels | ForEach-Object { "$($_.name)==$($_.version)" } | Select-Object -Unique
-          & $env:VENV_PY -m pip install --no-index --find-links wheelhouse @specs
-          if ($LASTEXITCODE -ne 0) { Write-Error "PIP INSTALL FAILED"; exit 1 }
-          & $env:VENV_PY -m pip check
-          if ($LASTEXITCODE -ne 0) { Write-Error "pip check FAILED"; exit 1 }
-
-      - name: Assert torch.version.cuda == '12.8'
-        run: |
-          & $env:VENV_PY -c "import torch; print('cuda:', torch.version.cuda); assert torch.version.cuda == '12.8', 'CUDA BUILD LOST'"
-
-      - name: ComfyUI boot (exit 0)
-        run: |
-          $url = "https://github.com/comfyanonymous/ComfyUI/archive/b1a247c9cf9dbfda4b2c0a0c1d50950667eeaa0c.zip"
-          Invoke-WebRequest -Uri $url -OutFile comfy.zip
-          $h = (Get-FileHash comfy.zip -Algorithm SHA256).Hash.ToLower()
-          if ($h -ne "14d2ffe3775d656ebe3d9a6f684b5f1874ac89992ca296ee3c4646c14ebe4e1e") { Write-Error "COMFY ZIP SHA MISMATCH: $h"; exit 1 }
-          Expand-Archive comfy.zip -DestinationPath .
-          $env:PYTHONPATH = "$PWD/ComfyUI-b1a247c9cf9dbfda4b2c0a0c1d50950667eeaa0c"
-          & $env:VENV_PY "$PWD/ComfyUI-b1a247c9cf9dbfda4b2c0a0c1d50950667eeaa0c/main.py" --cpu --quick-test-for-ci 2>&1 | Tee-Object -FilePath comfy-boot.log
+          $comfy = Join-Path $PWD ".spike-root/.engine/ComfyUI"
+          $vpy = Join-Path $PWD ".spike-root/.engine/venv/Scripts/python.exe"
+          if (-not (Test-Path (Join-Path $comfy "main.py"))) { Write-Error "ComfyUI was not extracted by installEngine: $comfy"; exit 1 }
+          if (-not (Test-Path $vpy)) { Write-Error "engine venv python missing: $vpy"; exit 1 }
+          & $vpy "$comfy/main.py" --cpu --quick-test-for-ci 2>&1 | Tee-Object -FilePath comfy-boot.log
           if ($LASTEXITCODE -ne 0) { Write-Host "RAW comfy-boot.log tail:"; Get-Content comfy-boot.log -Tail 30; Write-Error "COMFY BOOT FAILED"; exit 1 }
 
       - name: Report
         if: always()
         run: |
-          & $env:VENV_PY -c "import torch; print('torch', torch.__version__, '| cuda', torch.version.cuda)"
-          $venvBytes = (Get-ChildItem .spike-venv -Recurse -File | Measure-Object Length -Sum).Sum
-          "SHIPPED-PYTHON-SPIKE VENV BYTES: $venvBytes" | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          $vpy = Join-Path $PWD ".spike-root/.engine/venv/Scripts/python.exe"
+          if (Test-Path $vpy) { & $vpy -c "import torch; print('torch', torch.__version__, '| cuda', torch.version.cuda)" }
+          $venvBytes = (Get-ChildItem .spike-root/.engine/venv -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+          "SHIPPED-PYTHON-SPIKE (installEngine) VENV BYTES: $venvBytes" | Out-File -Append $env:GITHUB_STEP_SUMMARY

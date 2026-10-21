@@ -316,10 +316,17 @@ async function installEngine(root, opts = {}) {
     );
   }
 
-  // ---- preflight: GPU (warn-level is fatal here — the engine cannot run without CUDA)
-  const gpu = await gpuCheck();
-  if (!gpu.ok) return failResult(gpu.error.why, gpu.error.whatNext);
-  E('gpu', { gpu: gpu.gpu });
+  // ---- preflight: GPU (fatal here — the engine cannot run without CUDA).
+  // CI sets opts.skipGpuCheck (env TAKEONE_SKIP_GPU_CHECK=1) because GitHub
+  // runners have no NVIDIA GPU; the three GPU failure kinds are covered by
+  // unit tests, and the real GPU path is proven on the user's own PC.
+  if (opts.skipGpuCheck) {
+    E('gpu', { skipped: true, reason: 'TAKEONE_SKIP_GPU_CHECK=1 (CI has no NVIDIA GPU)' });
+  } else {
+    const gpu = await gpuCheck();
+    if (!gpu.ok) return failResult(gpu.error.why, gpu.error.whatNext);
+    E('gpu', { gpu: gpu.gpu });
+  }
   if (wasCancelled()) return failResult('Install cancelled.', 'You can start the install again any time.');
 
   // ---- venv: create from the shipped python, rebuild if it changed (amendment 3)
@@ -351,7 +358,7 @@ async function installEngine(root, opts = {}) {
 
   // ---- downloading (bytes-weighted, via the download manager's manifest job)
   E('phase', { phase: 'downloading' });
-  const downloadFiles = deps.downloadFiles || defaultDownloadFiles;
+  const downloadFiles = deps.downloadFiles || ((files, o) => defaultDownloadFiles(root, files, o));
   const dl = await downloadFiles(manifest.files, {
     onEvent: (e) => E('download', e),
     cancelToken: token,
@@ -458,9 +465,13 @@ async function installEngine(root, opts = {}) {
  * Default downloadFiles: sequential verified fetch through the app's download
  * manager (manifest job). Used in the real app; CI/tests inject their own.
  */
-async function defaultDownloadFiles(files, { onEvent, cancelToken }) {
+async function defaultDownloadFiles(root, files, { onEvent, cancelToken }) {
   const { DownloadManager } = require('./downloads.js');
-  const mgr = new DownloadManager({ root: path.dirname(path.dirname(files[0].dest)), aria2cPath: null, onEvent });
+  // TAKEONE_ARIA2 lets CI/dev point at a specific aria2c binary; the packaged
+  // app resolves its bundled sidecar; otherwise PATH is used.
+  const aria2cPath = process.env.TAKEONE_ARIA2
+    || (process.resourcesPath ? path.join(process.resourcesPath, 'aria2c.exe') : null);
+  const mgr = new DownloadManager({ root, aria2cPath, onEvent });
   await mgr.start();
   const jobId = 'takeone-engine';
   try {

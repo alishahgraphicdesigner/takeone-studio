@@ -1,0 +1,163 @@
+# TakeOne Studio — automated verification (no human QA).
+# Status of this file: Implemented, NEVER RUN yet. Every job below is Not Tested until its first green run.
+name: verify
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      measure_pip:
+        description: 'Also measure pip install sizes on Windows + Python 3.11 (slow, several GB)'
+        type: boolean
+        default: false
+
+jobs:
+  logic-and-real-aria2-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci
+      - run: npm test
+      - name: Download manager logic tests (simulated aria2c)
+        run: chmod +x tests/mock-aria2c.js && node --test --test-timeout=120000 --test-reporter=spec tests/downloads.behavior.test.js
+      - name: HF install-check + ensurePip regression tests
+        run: node --test --test-timeout=120000 --test-reporter=spec tests/hf-install-check.test.js tests/deps-ensurepip.test.js
+      - name: Download manager vs REAL aria2c (local server)
+        run: |
+          sudo apt-get update && sudo apt-get install -y aria2
+          ARIA2C="$(which aria2c)" node --test --test-timeout=120000 --test-reporter=spec tests/downloads.real-aria2.test.js
+      - name: Evidence fingerprint
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Evidence fingerprint"
+            echo "commit: $GITHUB_SHA"
+            echo '```'
+            git ls-files main.js package.json main tests tools .github | xargs sha256sum
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Download manager vs the SHIPPED aria2c.exe (local server)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path resources/aria2c.exe)) { throw 'resources/aria2c.exe is missing in the repo checkout' }
+          $env:ARIA2C = (Resolve-Path resources/aria2c.exe).Path
+          node --test --test-timeout=120000 --test-reporter=spec tests/downloads.real-aria2.test.js
+
+      - name: Build installer
+        id: build
+        shell: pwsh
+        env:
+          TAKEONE_SKIP_WINE: '1'
+        run: |
+          foreach ($f in 'resources/aria2c.exe','resources/python-3.11.17-windows-x86_64-install_only_stripped.tar.gz') {
+            if (-not (Test-Path $f)) { throw "Missing $f — the installer cannot be built without it." }
+          }
+          node build/make-readme.js
+          npx electron-builder --win nsis --publish never
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $exe = "dist/TakeOne-Studio-$v-setup.exe"
+          if (-not (Test-Path $exe)) { Get-ChildItem dist; throw "Expected $exe. The installer name must carry the version ($v): unique-version rule." }
+          "v=$v"   | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "exe=$exe" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "SHA256 $((Get-FileHash $exe -Algorithm SHA256).Hash)  $exe" | Tee-Object -FilePath dist/SHA256.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TakeOne-Studio-${{ steps.build.outputs.v }}-run${{ github.run_number }}
+          path: |
+            dist/*-setup.exe
+            dist/SHA256.txt
+
+      - name: Silent install + first-launch smoke test
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'smoke.log'
+          $env:TAKEONE_SMOKE = '1'; $env:TAKEONE_SMOKE_LOG = $log
+          Start-Process "${{ steps.build.outputs.exe }}" -ArgumentList '/S' -Wait
+          $app = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Directory -ErrorAction SilentlyContinue |
+                 Where-Object { Test-Path (Join-Path $_.FullName 'TakeOne Studio.exe') } | Select-Object -First 1
+          if (-not $app) { throw 'Installer finished but TakeOne Studio.exe was not found under %LOCALAPPDATA%\Programs' }
+          foreach ($rel in 'TakeOne Studio.exe','resources\aria2c.exe','resources\python.tar.gz') {
+            if (-not (Test-Path (Join-Path $app.FullName $rel))) { throw "Installed app is missing $rel" }
+          }
+          if (-not (Get-Process -Name 'TakeOne Studio' -ErrorAction SilentlyContinue)) {
+            Start-Process (Join-Path $app.FullName 'TakeOne Studio.exe')   # the one-click installer may or may not auto-launch
+          }
+          $ok = $false
+          for ($i = 0; $i -lt 90; $i++) {
+            Start-Sleep -Seconds 2
+            if ((Test-Path $log) -and ((Get-Content $log -Raw) -match 'wizard: page loaded')) { $ok = $true; break }
+          }
+          if (-not $ok) { throw 'The app did not reach the wizard within 180 s' }
+          $py = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'TakeOne\.python\python.exe'
+          if (-not (Test-Path $py)) { throw "Bundled Python was not unpacked: $py" }
+          $ver = & $py --version
+          if ($ver -notmatch '3\.11') { throw "Bundled Python reports '$ver', expected 3.11" }
+          Write-Host "OK: installed, launched, wizard reached, $ver"
+          Stop-Process -Name 'TakeOne Studio' -Force -ErrorAction SilentlyContinue
+
+      - name: Logs on failure
+        if: failure()
+        shell: pwsh
+        run: |
+          foreach ($p in (Join-Path $env:RUNNER_TEMP 'smoke.log'), (Join-Path $env:TEMP 'takeone-startup.log')) {
+            Write-Host "---- $p"; if (Test-Path $p) { Get-Content $p -Tail 80 } else { Write-Host '(missing)' }
+          }
+
+  pip-measure-windows:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.measure_pip }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        pkg: ['chatterbox-tts==0.1.7', 'faster-whisper==1.2.1', 'demucs==4.1.0', 'deepfilternet==0.5.6', 'lama-cleaner==1.2.5']
+        variant: ['plain', 'cu128']
+    steps:
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - name: Measure install size (fresh venv, dependencies included)
+        shell: pwsh
+        run: |
+          python -m venv venv
+          function Size($p) { (Get-ChildItem $p -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum }
+          if ("${{ matrix.variant }}" -eq "cu128") {
+            .\venv\Scripts\python -m pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cu128
+            if ($LASTEXITCODE -ne 0) { throw 'torch cu128 pre-install failed' }
+          }
+          $before = Size venv
+          .\venv\Scripts\python -m pip install --no-cache-dir "${{ matrix.pkg }}"
+          $rc = $LASTEXITCODE
+          $after = Size venv
+          $line = "${{ matrix.pkg }} [${{ matrix.variant }}]  rc=$rc  installBytes=$($after - $before)  ($([math]::Round(($after-$before)/1MB,1)) MiB)  python=$(.\venv\Scripts\python --version)"
+          Write-Host $line; $line | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          '### pip check [${{ matrix.variant }}]' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          $pc = .\venv\Scripts\python -m pip check 2>&1 | Out-String
+          Write-Host $pc; $pc | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          '### torch info [${{ matrix.variant }}]' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          $ti = & .\venv\Scripts\python -c "import torch;print(torch.__version__, torch.version.cuda)" 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { $ti = 'torch NOT installed in this variant (import failed)' }
+          $LASTEXITCODE = 0
+          Write-Host $ti; $ti | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          '```' | Out-File $env:GITHUB_STEP_SUMMARY -Append
+          if ($rc -ne 0) { throw 'pip install failed' }

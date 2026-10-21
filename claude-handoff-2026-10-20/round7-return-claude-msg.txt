@@ -1,0 +1,19 @@
+Round 7 return — WO-10 … WO-14
+
+Commits (pushed to main): d8c2edf (WO-10), 9044f3e (WO-13), eb0f0a2 (WO-12), 0e14221 (WO-11), fixes 6f1d517 / d833825 / 6ee91b0 / 3c01aed, engine-lock.json 20100af (HEAD).
+
+WO-10: Implemented + Tested + Passed. cancel now waits for aria2 'removed' (tellStatus, max 3 s) then deletes with exists-check (3 retries, 200 ms). New loop test F: 30/30 iterations in 3 separate runs — local Linux real aria2c (9.7 s), CI linux job (9.7 s), CI windows job with the shipped aria2c.exe (12.3 s). Behavior tests 11/11.
+
+WO-13: Implemented + Tested + Passed. Managers register and stop in afterEach (a failed assert can no longer skip mgr.stop and hang the process); --test-timeout=120000 placed before the glob in the test script. 103/103 pass, 3 runs, no hang.
+
+WO-12: Implemented + Tested + Passed. All 5 pip tools carry `unavailable` with evidence-based reasons; mergedToolStates + renderer/models.js show "Not Available" + reason and suppress Install. UI test (real studio.html + models.js, real catalog data): 5/5 cards, zero page errors. audit-catalog.js installed verbatim (+7 lines). catalog-gate --hash CI: GATE PASS — VERIFIED 14 · UNAVAILABLE 5 · NOT_AUDITABLE 2 (runs 39387866582, 39388440015, 39389676009, 39390754161).
+
+WO-11: Implemented, Passed after 4 disclosed failures. engine-spike run 39390192996 green: wheelhouse 86 files / 3,529,035,908 B; engine-lock.json committed (86 wheels, every {url, bytes, sha256}); pip check rc=0; torch.version.cuda == 12.8 asserted PASS; ComfyUI boot exit 0; total venv 5.6 GiB. Failures (all raw in package): (1) build-lock.py read pip-report.json with cp1252 → utf-8 fix; (2) report URLs carry %2B-encoded filenames → unquote; (3) pip download fetches extra wheels the dry-run report omits (setuptools) → extras must verify against the PyPI simple index; (4) torchaudio missing from requirements (constraints don't add packages) → trio now explicit requirements. Each fixed openly and re-run.
+
+WO-14: evidence delivered — raw gh run view JSONs: 39233357775 (failure, 09:52:56Z→09:57:32Z, headSha 26db31f1ab02…) and 39379830992 (cancelled, 06:20:44Z→06:38:34Z, headSha efa69304f5…). I RETRACT the "50 min" claim: timestamps show 17m50s, the 20-min timeout never got its chance. The hybrid fingerprint SHA was a splice error (first 7 chars of the new SHA + tail of the old one), owned and corrected here: real headSha of 39233357775 is 26db31f1ab0201c6b235c5a63ff10a57f2e6617d. All 5 requested files attached (two are the round-6-era copies, since current files are this round's patched versions).
+
+Fingerprint for HEAD 20100af500aac03ed3e0adbf13fe57bb680db77f is in NOTE.md (printed by CI's own Evidence fingerprint step).
+
+Full package attached: NOTE.md + 9 full files + 17 raw logs + UI test + screenshot.
+
+Awaiting your verdict / next work orders.

@@ -1,0 +1,80 @@
+# TakeOne Studio — real Windows install + import proof for pip tools (WO-8).
+# Status: Implemented, NOT RUN yet. Not Tested until its first green run.
+# Each tool gets its own fresh venv; the pip command is the one the app runs
+# (deps.js): python -m pip install --disable-pip-version-check --no-input <pkg>.
+# demucs + deepfilternet get torch+torchaudio (cu128, exact pin) FIRST per WO-8.
+# Per-tool verdict: install rc, import rc, torch identity, TOTAL venv size.
+# A per-tool failure is reported as its own Failed — never merged into others.
+name: pip-tools
+on:
+  workflow_dispatch:
+
+jobs:
+  tool-proof:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: chatterbox
+            pkg: 'chatterbox-tts==0.1.7'
+            import: 'chatterbox.tts'
+            torch_first: false
+          - id: faster-whisper
+            pkg: 'faster-whisper==1.2.1'
+            import: 'faster_whisper'
+            torch_first: false
+          - id: demucs
+            pkg: 'demucs==4.1.0'
+            import: 'demucs.separate'
+            torch_first: true
+          - id: deepfilternet
+            pkg: 'deepfilternet==0.5.6'
+            import: 'df.enhance'
+            torch_first: true
+          - id: lama-cleaner
+            pkg: 'lama-cleaner==1.2.5'
+            import: 'lama_cleaner'
+            torch_first: false
+    steps:
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      - name: Install (app command, own venv)
+        shell: pwsh
+        run: |
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          python -m venv venv
+          if ('${{ matrix.torch_first }}' -eq 'true') {
+            .\venv\Scripts\python -m pip install --disable-pip-version-check --no-input "torch==2.11.0+cu128" "torchaudio==2.11.0+cu128" --index-url https://download.pytorch.org/whl/cu128
+            if ($LASTEXITCODE -ne 0) { throw 'torch cu128 pre-install failed' }
+          }
+          .\venv\Scripts\python -m pip install --disable-pip-version-check --no-input "${{ matrix.pkg }}"
+          $rc = $LASTEXITCODE; $sw.Stop()
+          "install ${{ matrix.pkg }}: $([math]::Round($sw.Elapsed.TotalSeconds,1)) s | rc=$rc"
+          if ($rc -ne 0) { throw "pip install ${{ matrix.pkg }} FAILED rc=$rc" }
+
+      - name: Import test
+        shell: pwsh
+        run: |
+          .\venv\Scripts\python -c "import ${{ matrix.import }}; print('import ok: ${{ matrix.import }}')"
+          $rc = $LASTEXITCODE
+          "import rc=$rc"
+          if ($rc -ne 0) { throw "import ${{ matrix.import }} FAILED rc=$rc" }
+
+      - name: torch identity + pip check
+        if: always()
+        shell: pwsh
+        run: |
+          $ti = .\venv\Scripts\python -c "import torch; print('torch', torch.__version__, '| cuda', torch.version.cuda)" 2>&1 | Out-String
+          "torch in venv: $ti"
+          $pc = .\venv\Scripts\python -m pip check 2>&1 | Out-String
+          "pip check: $pc"
+
+      - name: TOTAL venv size (total, not delta)
+        if: always()
+        shell: pwsh
+        run: |
+          $bytes = (Get-ChildItem venv -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+          "TOTAL venv size (${{ matrix.id }}): $bytes bytes = $([math]::Round($bytes/1GB,2)) GiB"

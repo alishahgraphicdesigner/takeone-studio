@@ -1,0 +1,32 @@
+# TakeOne Studio — catalog audit gate in CI (WO-9).
+# Status: Implemented, NOT RUN yet. Not Tested until its first green run.
+# The gate is now a CI result, not a claim: node tools/audit-catalog.js --hash
+# exits 1 when the gate fails, and the raw output + JSON report are uploaded
+# as an artifact either way. FAIL = red.
+name: catalog-gate
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Audit catalog (--hash)
+        shell: bash
+        run: |
+          set -o pipefail
+          node tools/audit-catalog.js --hash 2>&1 | tee audit-output.txt
+      - name: Upload audit output + report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-audit-report
+          path: |
+            audit-output.txt
+            tools/audit-report.json

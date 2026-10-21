@@ -1,0 +1,167 @@
+# TakeOne Studio — ComfyUI engine install spike (Windows, no GPU).
+# WO-7: first spike. Raw finding then: the torch cu128 pin was SILENTLY
+# REPLACED by ComfyUI requirements (unpinned torch/torchvision from PyPI).
+# WO-11: the engine env is now HASH-PINNED end to end:
+#   1. constraints.txt pins torch/torchvision/torchaudio to exact cu128 builds.
+#   2. pip resolves ComfyUI's requirements against those constraints and
+#      downloads every wheel into a wheelhouse (nothing installs yet).
+#   3. engine-lock.json is built from pip's own resolution report AND the
+#      actual downloaded files: per wheel {url, bytes, sha256}; any mismatch
+#      between the report and a downloaded wheel FAILS the build.
+#   4. A FRESH venv installs ONLY from the wheelhouse
+#      (--no-index --find-links), so no network package can substitute.
+#   5. Hard assert: torch.version.cuda == '12.8', else the build FAILS.
+#   6. ComfyUI boots with --cpu --quick-test-for-ci; exit must be 0.
+# engine-lock.json is uploaded as an artifact (it is committed to the repo
+# from that artifact by Muse; the workflow itself has read-only contents).
+name: engine-spike
+on:
+  workflow_dispatch:
+
+jobs:
+  comfyui-engine-spike:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      - name: Download ComfyUI (pinned commit + sha256 check)
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/comfyanonymous/ComfyUI/archive/b1a247c9cf9dbfda4b2c0a0c1d50950667eeaa0c.zip'
+          Invoke-WebRequest -Uri $url -OutFile comfyui.zip
+          $h = (Get-FileHash comfyui.zip -Algorithm SHA256).Hash.ToLower()
+          $exp = '14d2ffe3775d656ebe3d9a6f684b5f1874ac89992ca296ee3c4646c14ebe4e1e'
+          "comfyui.zip bytes: $((Get-Item comfyui.zip).Length) | sha256: $h"
+          if ($h -ne $exp) { throw "ComfyUI zip sha256 mismatch: got $h, expected $exp" }
+          Expand-Archive comfyui.zip -DestinationPath .
+          Rename-Item 'ComfyUI-b1a247c9cf9dbfda4b2c0a0c1d50950667eeaa0c' 'ComfyUI'
+          "ComfyUI license: GPL-3.0 (LICENSE file = GNU General Public License v3)"
+
+      - name: Write constraints (exact cu128 pins for the torch trio)
+        shell: pwsh
+        run: |
+          @'
+          torch==2.11.0+cu128
+          torchvision==0.26.0+cu128
+          torchaudio==2.11.0+cu128
+          '@ | Set-Content -Path constraints.txt -Encoding ascii
+          Get-Content constraints.txt
+
+      - name: Resolve + download wheelhouse (installs nothing yet)
+        shell: pwsh
+        run: |
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          python -m pip install --dry-run --report pip-report.json --no-cache-dir -r ComfyUI\requirements.txt -c constraints.txt --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple
+          if ($LASTEXITCODE -ne 0) { throw 'pip resolution (dry-run --report) failed' }
+          python -m pip download --no-cache-dir -r ComfyUI\requirements.txt -c constraints.txt --index-url https://download.pytorch.org/whl/cu128 --extra-index-url https://pypi.org/simple --dest wheelhouse
+          $rc = $LASTEXITCODE; $sw.Stop()
+          "wheelhouse download time: $([math]::Round($sw.Elapsed.TotalSeconds,1)) s | rc=$rc"
+          if ($rc -ne 0) { throw "wheelhouse download failed rc=$rc" }
+          $wb = (Get-ChildItem wheelhouse -File | Measure-Object Length -Sum).Sum
+          "wheelhouse: $((Get-ChildItem wheelhouse -File).Count) files, $wb bytes total"
+
+      - name: Build engine-lock.json (report cross-checked against downloaded wheels)
+        shell: pwsh
+        run: |
+          @'
+          import hashlib, json, os, sys
+          rep = json.load(open('pip-report.json', encoding='utf-8'))
+          wheels = []
+          seen = {}
+          for item in rep.get('install', []):
+              meta = item['metadata']; di = item['download_info']
+              url = di['url']; fname = url.split('/')[-1]
+              rep_sha = (di.get('archive_info', {}).get('hashes', {}) or {}).get('sha256') or di.get('archive_info', {}).get('hash')
+              path = os.path.join('wheelhouse', fname)
+              if not os.path.exists(path):
+                  print('LOCK FAIL: resolved wheel missing from wheelhouse:', fname); sys.exit(1)
+              h = hashlib.sha256(); n = 0
+              with open(path, 'rb') as fh:
+                  while True:
+                      chunk = fh.read(1 << 20)
+                      if not chunk: break
+                      h.update(chunk); n += len(chunk)
+              sha = h.hexdigest()
+              if rep_sha and rep_sha != sha:
+                  print('LOCK FAIL: sha256 mismatch for', fname, 'report', rep_sha, 'file', sha); sys.exit(1)
+              wheels.append({'name': meta['name'], 'version': meta['version'], 'file': fname, 'url': url, 'bytes': n, 'sha256': sha})
+              seen[fname] = True
+          extra = [f for f in os.listdir('wheelhouse') if f not in seen]
+          if extra:
+              print('LOCK FAIL: wheelhouse holds files the resolution did not ask for:', extra); sys.exit(1)
+          wheels.sort(key=lambda w: w['name'].lower())
+          lock = {'schema': 1, 'python': '3.11', 'index': 'https://download.pytorch.org/whl/cu128', 'extraIndex': 'https://pypi.org/simple',
+                  'constraints': {'torch': '2.11.0+cu128', 'torchvision': '0.26.0+cu128', 'torchaudio': '2.11.0+cu128'},
+                  'comfyuiCommit': 'b1a247c9cf9dbfda4b2c0a0c1d50950667eeaa0c',
+                  'wheelCount': len(wheels), 'totalBytes': sum(w['bytes'] for w in wheels), 'wheels': wheels}
+          json.dump(lock, open('engine-lock.json', 'w', encoding='utf-8'), indent=2)
+          print('engine-lock.json: %d wheels, %d bytes total' % (lock['wheelCount'], lock['totalBytes']))
+          '@ | Set-Content -Path build-lock.py -Encoding ascii
+          python build-lock.py
+          if ($LASTEXITCODE -ne 0) { throw 'engine-lock.json build failed' }
+
+      - name: Upload engine-lock.json
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-lock
+          path: engine-lock.json
+
+      - name: Fresh venv — install ONLY from the wheelhouse (--no-index)
+        shell: pwsh
+        run: |
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          python -m venv venv
+          .\venv\Scripts\python -m pip install --no-cache-dir --no-index --find-links wheelhouse -r ComfyUI\requirements.txt -c constraints.txt
+          $rc = $LASTEXITCODE; $sw.Stop()
+          "wheelhouse install time: $([math]::Round($sw.Elapsed.TotalSeconds,1)) s | rc=$rc"
+          if ($rc -ne 0) { throw "wheelhouse install failed rc=$rc" }
+          .\venv\Scripts\python -m pip check
+          if ($LASTEXITCODE -ne 0) { throw 'pip check failed' }
+          "pip check rc=0 (clean)"
+
+      - name: Assert the GPU torch survived (torch.version.cuda == 12.8, else FAIL)
+        shell: pwsh
+        run: |
+          .\venv\Scripts\python -c "import torch, torchvision, torchaudio; print('torch', torch.__version__, '| cuda', torch.version.cuda, '| torchvision', torchvision.__version__, '| torchaudio', torchaudio.__version__); assert torch.version.cuda == '12.8', 'torch.version.cuda is %r, expected 12.8 — the cu128 pin did NOT survive' % (torch.version.cuda,)"
+          if ($LASTEXITCODE -ne 0) { throw 'cu128 survival assert FAILED — build fails here, by design (WO-11)' }
+          "cu128 assert PASSED: torch.version.cuda == 12.8"
+
+      - name: Boot test (--cpu --quick-test-for-ci)
+        shell: pwsh
+        run: |
+          Push-Location ComfyUI
+          ..\venv\Scripts\python main.py --cpu --quick-test-for-ci
+          $rc = $LASTEXITCODE
+          Pop-Location
+          "ComfyUI boot exit code: $rc"
+          if ($rc -ne 0) { throw "ComfyUI boot FAILED rc=$rc" }
+          "ComfyUI boot PASSED (exit 0 after full init, no GPU)"
+
+      - name: Total env size (total, not delta)
+        if: always()
+        shell: pwsh
+        run: |
+          $bytes = (Get-ChildItem venv -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+          "TOTAL venv size: $bytes bytes = $([math]::Round($bytes/1GB,2)) GiB"
+          if (Test-Path engine-lock.json) {
+            $lock = Get-Content engine-lock.json -Raw | ConvertFrom-Json
+            "LOCK SUM: $($lock.wheelCount) wheels, $($lock.totalBytes) bytes total (engine-lock.json)"
+          } else {
+            "LOCK SUM: engine-lock.json MISSING (the lock step failed above — see that step's log)"
+          }
+
+      - name: Evidence fingerprint
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### Evidence fingerprint"
+            echo "commit: $GITHUB_SHA"
+            echo '```'
+            git ls-files main.js package.json main tests tools .github | xargs sha256sum
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"

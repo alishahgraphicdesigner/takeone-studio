@@ -968,10 +968,27 @@ function wireIPC() {
   ipcMain.handle('takeone:engineInstall', async (e, root) => {
     const r = root || defaultRoot();
     engineToken = engine.newCancelToken();
+    // Use the app's single download manager (one aria2c daemon, not two).
+    const mgr = await getDLM(r);
     const res = await engine.installEngine(r, {
       cancelToken: engineToken,
       onEvent: (ev) => {
         if (studioWin && !studioWin.isDestroyed()) studioWin.webContents.send('engine-event', ev);
+      },
+      deps: {
+        downloadFiles: async (files, { onEvent, cancelToken }) => {
+          const rr = await mgr.addManifestJob({ id: 'takeone-engine', files, category: 'engine' });
+          if (!rr.ok) return { ok: false, why: rr.reason || 'Could not start the download.', whatNext: 'Check your internet connection and try again.' };
+          const st = await mgr.waitFor('takeone-engine', cancelToken);
+          if (st === 'cancelled' || (cancelToken && cancelToken.cancelled)) {
+            return { ok: false, cancelled: true, why: 'Install cancelled.', whatNext: 'You can start the install again any time.' };
+          }
+          if (st !== 'done') {
+            const je = mgr.entries.get('takeone-engine');
+            return { ok: false, why: (je && je.error) || 'Some engine files could not be downloaded.', whatNext: 'Check your internet connection and try again. Downloaded files are kept.' };
+          }
+          return { ok: true };
+        },
       },
     });
     engineToken = null;
