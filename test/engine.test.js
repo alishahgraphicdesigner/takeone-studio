@@ -256,6 +256,15 @@ describe('checkGpu (amendment 7)', () => {
   });
 });
 
+describe('checkDiskSpace', () => {
+  it('walks up to the nearest existing ancestor on a fresh root', () => {
+    const fresh = path.join(ROOT, 'no-such-dir', 'deeper');
+    const r = engine.checkDiskSpace(fresh);
+    assert.ok(r.freeBytes > 0, 'found real free space via ancestor');
+    assert.ok(r.needBytes > 9e9, 'need ~= 9.7 GB x headroom');
+  });
+});
+
 describe('state file', () => {
   it('writes atomically — no .tmp leftovers, always parseable', () => {
     engine.writeEngineState(ROOT, { ...engine.freshState(), ready: true });

@@ -163,12 +163,17 @@ function planEngineInstall(root, opts = {}) {
 /* ---------------------------------------------------------------- checks */
 
 function checkDiskSpace(root) {
-  let freeBytes = 0;
-  try { freeBytes = fs.statfsSync(engineRoot(root)).bfree * fs.statfsSync(engineRoot(root)).bsize; }
-  catch {
-    try { freeBytes = fs.statfsSync(root).bfree * fs.statfsSync(root).bsize; }
-    catch { freeBytes = 0; }
+  // statfs needs an EXISTING path — walk up to the nearest existing ancestor
+  // (the engine dir itself usually doesn't exist yet on a fresh install).
+  let dir = path.resolve(engineRoot(root));
+  while (!fs.existsSync(dir)) {
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
   }
+  let freeBytes = 0;
+  try { const s = fs.statfsSync(dir); freeBytes = s.bfree * s.bsize; }
+  catch { freeBytes = 0; }
   const needBytes = Math.ceil(ESTIMATED_ENGINE_BYTES * HEADROOM_FACTOR);
   return { ok: freeBytes >= needBytes, freeBytes, needBytes };
 }
