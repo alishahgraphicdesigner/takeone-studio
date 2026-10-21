@@ -20,7 +20,8 @@
       "main/**/*",
       "preload.js",
       "renderer/**/*",
-      "package.json"
+      "package.json",
+      "engine-lock.json"
     ],
     "nsis": {
       "allowToChangeInstallationDirectory": false,

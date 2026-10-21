@@ -933,14 +933,27 @@ function wireIPC() {
   // ── ComfyUI engine (Phase D: real generation) ──
   const { ComfyManager } = require('./main/comfy.js');
   const { sdxlTxt2Img } = require('./main/comfy-workflows.js');
+  const engine = require('./main/engine.js');
   let comfyMgr = null;
   function getComfy(root) {
     if (!comfyMgr) {
-      const { pythonExe } = require('./deps.js');
+      // WO-23: when the engine is installed, ComfyUI runs on the engine venv's
+      // python with the engine's extra_model_paths; otherwise fall back to the
+      // legacy shipped-python path.
+      let pythonExe, comfyDir;
+      try {
+        engine.assertEngineReady(root);
+        pythonExe = engine.venvPython(root);
+        comfyDir = engine.comfyDir(root);
+      } catch {
+        const { pythonExe: legacyPythonExe } = require('./deps.js');
+        pythonExe = legacyPythonExe(root);
+        comfyDir = path.join(root, 'ComfyUI');
+      }
       comfyMgr = new ComfyManager({
         root,
-        pythonExe: pythonExe(root),
-        comfyDir: path.join(root, 'ComfyUI'),
+        pythonExe,
+        comfyDir,
         onEvent: (type, data) => {
           if (studioWin && !studioWin.isDestroyed()) {
             studioWin.webContents.send('comfy-event', { type, ...data });
@@ -950,6 +963,29 @@ function wireIPC() {
     }
     return comfyMgr;
   }
+  // ── Engine install (WO-23) ──
+  let engineToken = null;
+  ipcMain.handle('takeone:engineInstall', async (e, root) => {
+    const r = root || defaultRoot();
+    engineToken = engine.newCancelToken();
+    const res = await engine.installEngine(r, {
+      cancelToken: engineToken,
+      onEvent: (ev) => {
+        if (studioWin && !studioWin.isDestroyed()) studioWin.webContents.send('engine-event', ev);
+      },
+    });
+    engineToken = null;
+    return res;
+  });
+  ipcMain.handle('takeone:engineCancel', async () => {
+    if (engineToken) engineToken.cancelled = true;
+    engine.cancelEngineInstall();
+    return { ok: true };
+  });
+  ipcMain.handle('takeone:engineStatus', async (e, root) => {
+    const r = root || defaultRoot();
+    return { ok: true, ready: engine.engineReady(r), state: engine.readEngineState(r) };
+  });
   ipcMain.handle('takeone:comfyStart', async (e, root) => {
     const r = root || defaultRoot();
     return getComfy(r).start();

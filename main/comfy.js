@@ -43,13 +43,62 @@ class ComfyManager {
     }
 
     return new Promise((resolve) => {
-      const args = [mainPy, '--port', String(this.port), '--disable-auto-launch'];
-      this.proc = spawn(this.pythonExe, args, {
-        cwd: this.comfyDir,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      const done0 = (r) => resolve(r);
+      this._pickPort().then((port) => {
+        this.port = port;
+        this._comfyArgs(mainPy).then((args) => {
+          this.proc = spawn(this.pythonExe, args, {
+            cwd: this.comfyDir,
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          this._wireProc(done0);
+        }).catch((e) => done0({ ok: false, error: `Could not start ComfyUI: ${e.message}` }));
+      }).catch((e) => done0({ ok: false, error: `Could not find a free port for ComfyUI: ${e.message}` }));
+    });
+  }
 
+  /** Amendment 8: pick a free port (8188 first, then scan up). */
+  async _pickPort() {
+    const net = require('net');
+    for (let p = COMFY_PORT; p < COMFY_PORT + 20; p++) {
+      const free = await new Promise((res) => {
+        const s = net.createServer();
+        s.once('error', () => res(false));
+        s.once('listening', () => s.close(() => res(true)));
+        s.listen(p, '127.0.0.1');
+      });
+      if (free) return p;
+    }
+    throw new Error('no free port in 8188-8207');
+  }
+
+  /**
+   * Amendment 8: build the ComfyUI argv. --disable-api-nodes is only added when
+   * main.py --help actually lists it (ComfyUI versions differ); the --help
+   * output is appended to the ComfyUI log so the choice is auditable.
+   * Always binds to 127.0.0.1 (never 0.0.0.0).
+   */
+  async _comfyArgs(mainPy) {
+    const args = [mainPy, '--port', String(this.port), '--listen', '127.0.0.1', '--disable-auto-launch'];
+    let helpOut = '';
+    try {
+      helpOut = await new Promise((resolve) => {
+        const p = spawn(this.pythonExe, [mainPy, '--help'], { cwd: this.comfyDir, windowsHide: true });
+        let out = '';
+        p.stdout.on('data', (d) => { out += d; });
+        p.stderr.on('data', (d) => { out += d; });
+        p.on('error', () => resolve(''));
+        p.on('close', () => resolve(out));
+        setTimeout(() => { try { p.kill(); } catch {} resolve(out); }, 30000);
+      });
+    } catch { /* fall through without the flag */ }
+    if (helpOut) this.onEvent('log', { line: 'main.py --help captured (' + helpOut.length + ' chars)' });
+    if (helpOut && helpOut.includes('--disable-api-nodes')) args.push('--disable-api-nodes');
+    return args;
+  }
+
+  _wireProc(resolve) {
       let settled = false;
       const done = (r) => { if (!settled) { settled = true; resolve(r); } };
 
@@ -88,7 +137,6 @@ class ComfyManager {
           done({ ok: false, error: 'ComfyUI took too long to start. Check the logs.' });
         }
       }, START_TIMEOUT_MS);
-    });
   }
 
   /** Poll /system_stats until it responds (max 30s). */

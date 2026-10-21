@@ -437,6 +437,144 @@ class DownloadManager {
     await this.persist();
   }
 
+  /* ------------------------------------------------- manifest jobs (WO-23) ---
+   * A manifest job is a plain-URL multi-file job: the engine's 87 files.
+   * Mirrors the HF multi-file machinery (per-file verify, resume-skip,
+   * cancel deletes only the active partial) with per-file dest instead of
+   * an HF repo/commit. Amendment 9: every dest is guarded to stay inside root.
+   */
+  async addManifestJob({ id, files, category }) {
+    if (!id || !Array.isArray(files) || !files.length) {
+      throw new Error('Manifest job needs an id and a files[] manifest.');
+    }
+    const existing = this.entries.get(id);
+    if (existing && ['downloading', 'queued', 'verifying'].includes(existing.status)) {
+      return { ok: false, reason: 'Already downloading.' };
+    }
+    const root = path.resolve(this.root);
+    for (const f of files) {
+      if (!f.url || !f.dest || !f.bytes) return { ok: false, reason: `Bad manifest entry: ${f.file || f.url}` };
+      const d = path.resolve(f.dest);
+      if (d !== root && !d.startsWith(root + path.sep)) {
+        return { ok: false, reason: `Blocked unsafe destination: ${f.dest}` };
+      }
+    }
+    const totalBytes = files.reduce((s, f) => s + f.bytes, 0);
+    const entry = {
+      toolId: id, isManifest: true, files, totalBytes,
+      completedBytes: 0, currentFileIndex: 0, currentFileName: null, gid: null,
+      category: category || 'misc',
+      status: 'queued', progress: 0, speedBps: 0, retries: 0,
+      addedAt: new Date().toISOString(),
+    };
+    this.entries.set(id, entry);
+    this.emit('state', { toolId: id, state: 'queued' });
+    await this.persist();
+    await this._startNextManifestFile(id);
+    return { ok: true };
+  }
+
+  /** Start (or restart) the current file of a manifest job, skipping files already in place. */
+  async _startNextManifestFile(jobId) {
+    const e = this.entries.get(jobId);
+    if (!e || !e.isManifest) return;
+    if (e.status === 'cancelled' || e.status === 'paused') return;
+    while (e.currentFileIndex < e.files.length) { // resume: verified files stay
+      const f = e.files[e.currentFileIndex];
+      if ((await sizeOf(f.dest)) === f.bytes) { e.completedBytes += f.bytes; e.currentFileIndex++; continue; }
+      break;
+    }
+    if (e.currentFileIndex >= e.files.length) return this._finishManifest(jobId, e);
+    const f = e.files[e.currentFileIndex];
+    const outName = `mf_${jobId}_${e.currentFileIndex}_${path.basename(f.file || 'file')}`;
+    await this._prepOut(jobId, outName);
+    e.status = 'downloading';
+    e.currentFile = f;
+    e.currentFileName = outName;
+    e.fileName = outName; // non-HF branch of cancel() deletes the active partial from staging
+    e.progress = e.completedBytes / e.totalBytes;
+    this.emit('state', {
+      toolId: jobId, state: 'downloading', phase: 'downloading',
+      fileIndex: e.currentFileIndex + 1, fileCount: e.files.length, fileName: f.file,
+    });
+    const gid = await this.rpc('addUri', [[f.url], { out: outName }]);
+    e.gid = gid;
+    await this.persist();
+  }
+
+  /** Current manifest file arrived: verify size + sha256, move it into place, start the next one. */
+  async _completeManifestFile(jobId, e) {
+    const f = e.files[e.currentFileIndex];
+    const filePath = path.join(this.stagingDir(), e.currentFileName);
+    e.gid = null;
+    e.status = 'verifying';
+    this.emit('state', {
+      toolId: jobId, state: 'verifying', phase: 'verifying',
+      fileIndex: e.currentFileIndex + 1, fileCount: e.files.length, fileName: f.file,
+    });
+    const size = await sizeOf(filePath);
+    if (size !== f.bytes) return this._failManifest(jobId, e, `File ${f.file}: wrong size (got ${size === null ? 0 : size}, expected ${f.bytes})`, true);
+    if (f.sha256) {
+      let actual = null;
+      try { actual = await sha256File(filePath, this._verifyProgress(jobId, e), () => e.status === 'cancelled' || this.stopping); }
+      catch (err) { if (err.message === 'aborted') return this._discardIfCancelled(e, filePath); }
+      if (e.status === 'cancelled') return this._discardIfCancelled(e, filePath);
+      if (!actual) return this._failManifest(jobId, e, `File ${f.file}: could not be read for verification`, false);
+      if (actual.toLowerCase() !== f.sha256.toLowerCase()) {
+        return this._failManifest(jobId, e, `File ${f.file}: checksum mismatch (the file is corrupt)`, true);
+      }
+    }
+    if (e.status === 'cancelled') return this._discardIfCancelled(e, filePath);
+    await fsp.mkdir(path.dirname(f.dest), { recursive: true });
+    try { await fsp.rename(filePath, f.dest); } catch { await fsp.copyFile(filePath, f.dest); await fsp.unlink(filePath); }
+    try { await fsp.unlink(filePath + '.aria2'); } catch { /* ignore */ }
+    e.completedBytes += f.bytes;
+    e.currentFileIndex++;
+    e.currentFileName = null;
+    e.progress = e.completedBytes / e.totalBytes;
+    this.emit('progress', {
+      toolId: jobId, state: 'downloading', progress: e.progress, phase: 'downloading',
+      doneBytes: e.completedBytes, totalBytes: e.totalBytes,
+      fileIndex: Math.min(e.currentFileIndex + 1, e.files.length), fileCount: e.files.length,
+    });
+    await this.persist();
+    await this._startNextManifestFile(jobId);
+  }
+
+  async _finishManifest(jobId, e) {
+    e.status = 'done'; e.progress = 1; e.gid = null; e.error = null;
+    this.emit('state', { toolId: jobId, state: 'done', phase: 'done' });
+    await this.persist();
+  }
+
+  /** Manifest failure: say WHICH file and WHY. Verified files stay; only a corrupt file is discarded. */
+  async _failManifest(jobId, e, reason, corrupt = false) {
+    e.status = 'failed'; e.error = reason; e.gid = null; e.failKind = corrupt ? 'verify' : 'network';
+    if (corrupt && e.currentFileName) {
+      const p = path.join(this.stagingDir(), e.currentFileName);
+      for (const s of ['', '.aria2']) { try { await fsp.unlink(p + s); } catch { /* ignore */ } }
+    }
+    this.emit('state', { toolId: jobId, state: 'failed', error: reason, failKind: e.failKind });
+    await this.persist();
+  }
+
+  /** Wait until a job reaches done / failed / cancelled. Resolves with the final status. */
+  async waitFor(jobId, cancelToken) {
+    for (;;) {
+      const e = this.entries.get(jobId);
+      if (!e) return 'missing';
+      if (['done', 'failed'].includes(e.status)) return e.status;
+      if (e.status === 'cancelled' || (cancelToken && cancelToken.cancelled)) return 'cancelled';
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+
+  /** Current status string of a job ('done' | 'failed' | 'cancelled' | ...), or 'missing'. */
+  jobState(jobId) {
+    const e = this.entries.get(jobId);
+    return e ? e.status : 'missing';
+  }
+
   async pause(toolId) {
     const e = this.entries.get(toolId);
     if (!e) return { ok: false };
@@ -457,6 +595,12 @@ class DownloadManager {
       e.status = 'queued'; e.error = null; e.gid = null;
       this.emit('state', { toolId, state: 'queued' });
       await this._startNextHfFile(toolId);
+      return { ok: true, resumed: true };
+    }
+    if (e.isManifest) {
+      e.pauseHeld = false; e.status = 'queued'; e.error = null; e.gid = null;
+      this.emit('state', { toolId, state: 'queued' });
+      await this._startNextManifestFile(toolId);
       return { ok: true, resumed: true };
     }
     if (e.status === 'interrupted' || !e.gid) {
@@ -561,10 +705,10 @@ class DownloadManager {
       const done = parseInt(st.completedLength || '0', 10);
       const speed = parseInt(st.downloadSpeed || '0', 10);
       let progress, emitTotal, emitDone;
-      if (e.isHf) {
+      if (e.isHf || e.isManifest) {
         e.currentFileBytes = done;
         emitDone = e.completedBytes + done; emitTotal = e.totalBytes;
-        progress = emitDone / emitTotal;
+        progress = emitTotal > 0 ? emitDone / emitTotal : 0;
       } else {
         emitDone = done; emitTotal = total || e.expectedBytes;
         progress = total > 0 ? done / total : 0;
@@ -575,6 +719,7 @@ class DownloadManager {
           toolId, state: uiState, progress, speedBps: speed, totalBytes: emitTotal, doneBytes: emitDone,
           etaSec: speed > 0 ? Math.round((emitTotal - emitDone) / speed) : null, phase: 'downloading',
           ...(e.isHf ? { fileIndex: e.currentFileIndex + 1, fileCount: e.files.length, fileName: e.currentFile && e.currentFile.path } : {}),
+          ...(e.isManifest ? { fileIndex: e.currentFileIndex + 1, fileCount: e.files.length, fileName: e.currentFile && e.currentFile.file } : {}),
         });
       }
     }
@@ -595,7 +740,11 @@ class DownloadManager {
     if (e.busy) return;
     e.busy = true; e.gid = null;
     const p = (async () => {
-      try { if (e.isHf) await this._completeHfFile(toolId, e); else await this.finish(toolId, e); }
+      try {
+        if (e.isHf) await this._completeHfFile(toolId, e);
+        else if (e.isManifest) await this._completeManifestFile(toolId, e);
+        else await this.finish(toolId, e);
+      }
       catch (err) {
         e.status = 'failed'; e.error = `The verification step crashed: ${err.message || err}`; e.failKind = 'verify';
         this.emit('state', { toolId, state: 'failed', error: e.error });
