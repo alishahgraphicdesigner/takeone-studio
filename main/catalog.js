@@ -70,7 +70,7 @@ const CATALOG = [
     id: 'video-studio', group: 'Video',
     friendlyName: 'Video Studio', technical: 'Wan 2.1 1.3B',
     installType: 'hf',
-    unavailable: 'Not available yet: no video workflow exists — main/comfy-workflows.js has only sdxlTxt2Img; there is no Wan 2.1 run path in the app. Withheld until a real video workflow is implemented and verified.',
+    unavailable: 'Not available yet: no video workflow exists — main/comfy-workflows.js has only the single SDXL text-to-image workflow; there is no Wan 2.1 run path in the app. Withheld until a real video workflow is implemented and verified.',
     unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.', repo: 'Wan-AI/Wan2.1-T2V-1.3B',
     commit: '37ec512624d61f7aa208f7ea8140a131f93afc9a',
     files: [
@@ -95,7 +95,7 @@ const CATALOG = [
     id: 'video-quality', group: 'Video',
     friendlyName: 'Video Quality', technical: 'Allegro 2.8B',
     installType: 'hf',
-    unavailable: 'Not available yet: no video workflow exists — main/comfy-workflows.js has only sdxlTxt2Img; there is no Allegro run path in the app. Withheld until a real video workflow is implemented and verified.',
+    unavailable: 'Not available yet: no video workflow exists — main/comfy-workflows.js has only the single SDXL text-to-image workflow; there is no Allegro run path in the app. Withheld until a real video workflow is implemented and verified.',
     unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.', repo: 'rhymes-ai/Allegro',
     commit: 'c1b9207bb5cb79e2aa08f3d139c17d26c0de55b6',
     files: [
@@ -131,7 +131,7 @@ const CATALOG = [
     id: 'video-pro', group: 'Video',
     friendlyName: 'Video Pro', technical: 'Wan 2.2 TI2V-5B',
     installType: 'hf',
-    unavailable: 'Not available yet: no video workflow exists — main/comfy-workflows.js has only sdxlTxt2Img; there is no Wan 2.2 run path in the app. Withheld until a real video workflow is implemented and verified.',
+    unavailable: 'Not available yet: no video workflow exists — main/comfy-workflows.js has only the single SDXL text-to-image workflow; there is no Wan 2.2 run path in the app. Withheld until a real video workflow is implemented and verified.',
     unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.', repo: 'Wan-AI/Wan2.2-TI2V-5B',
     commit: '921dbaf3f1674a56f47e83fb80a34bac8a8f203e',
     files: [
