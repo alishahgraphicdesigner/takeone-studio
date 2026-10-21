@@ -312,9 +312,18 @@ async function auditOne(t) {
   // A tool marked `unavailable: '<reason>'` is NOT offered to users, so it cannot mislead them. It is listed, never hidden,
   // and it does not block the gate. The reason must be a real sentence (not empty / not 'true').
   if (t.unavailable) {
-    const ok = typeof t.unavailable === 'string' && t.unavailable.trim().length >= 20;
-    return { ...base, status: ok ? 'UNAVAILABLE' : 'MISMATCH', expected: {}, measured: {},
-      notes: [ok ? `not offered to users: ${t.unavailable}` : "unavailable must be a reason string (>= 20 chars): users and the audit need the WHY"] };
+    const problems = [];
+    if (typeof t.unavailable !== 'string' || t.unavailable.trim().length < 20) problems.push('unavailable (for developers) must be a reason string of at least 20 characters');
+    const u = t.unavailableUser;
+    if (typeof u !== 'string' || u.trim().length < 20 || u.trim().length > 240) problems.push('unavailableUser (shown to users) must be 20-240 characters of plain words');
+    else {
+      if (!/^coming soon/i.test(u.trim())) problems.push('unavailableUser must start with "Coming soon"');
+      // Users must never read developer language.
+      const jargon = /\b(run\s*#?\d+|CI|WO-?\d+|pip|PyPI|torch|cu\d{3}|venv|sha-?256|import|ModuleNotFound|stack ?trace|exit code|rc=\d+)\b|==|\.py\b/i.exec(u);
+      if (jargon) problems.push(`unavailableUser contains developer wording ("${jargon[0]}")`);
+    }
+    return { ...base, status: problems.length ? 'MISMATCH' : 'UNAVAILABLE', expected: {}, measured: {},
+      notes: problems.length ? problems : [`not offered to users: ${t.unavailable}`] };
   }
   try {
     let r;

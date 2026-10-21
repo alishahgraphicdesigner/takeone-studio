@@ -35,6 +35,8 @@ const CATALOG = [
     id: 'brain', group: 'AI Brain',
     friendlyName: 'Brain', technical: 'Qwen3 8B Q4_K_M (llama.cpp)',
     installType: 'file',
+    unavailable: 'Not available yet: the catalog entry is Brain (Qwen3 8B), but main/brain.js (TakeOneBrain) does not load Qwen3 — no Qwen3 model fetch or run path exists in the app. The in-app suggestions run on the associative model, not on this catalog entry. Withheld until a real Qwen3 load/run path is implemented and verified.',
+    unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.',
     url: 'https://huggingface.co/Qwen/Qwen3-8B-GGUF/resolve/main/Qwen3-8B-Q4_K_M.gguf',
     fileName: 'qwen3-8b-q4_k_m.gguf', sha256: 'd98cdcbd03e17ce47681435b5150e34c1417f50b5c0019dd560e4882c5745785',
     sizeMB: 4795, sizeBytes: 5027783488, vramMB: 6144,
@@ -67,7 +69,9 @@ const CATALOG = [
   {
     id: 'video-studio', group: 'Video',
     friendlyName: 'Video Studio', technical: 'Wan 2.1 1.3B',
-    installType: 'hf', repo: 'Wan-AI/Wan2.1-T2V-1.3B',
+    installType: 'hf',
+    unavailable: 'Not available yet: no video workflow exists — main/comfy-workflows.js has only sdxlTxt2Img; there is no Wan 2.1 run path in the app. Withheld until a real video workflow is implemented and verified.',
+    unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.', repo: 'Wan-AI/Wan2.1-T2V-1.3B',
     commit: '37ec512624d61f7aa208f7ea8140a131f93afc9a',
     files: [
       { path: 'models_t5_umt5-xxl-enc-bf16.pth', bytes: 11361920418, sha256: '7cace0da2b446bbbbc57d031ab6cf163a3d59b366da94e5afe36745b746fd81d' },
@@ -90,7 +94,9 @@ const CATALOG = [
   {
     id: 'video-quality', group: 'Video',
     friendlyName: 'Video Quality', technical: 'Allegro 2.8B',
-    installType: 'hf', repo: 'rhymes-ai/Allegro',
+    installType: 'hf',
+    unavailable: 'Not available yet: no video workflow exists — main/comfy-workflows.js has only sdxlTxt2Img; there is no Allegro run path in the app. Withheld until a real video workflow is implemented and verified.',
+    unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.', repo: 'rhymes-ai/Allegro',
     commit: 'c1b9207bb5cb79e2aa08f3d139c17d26c0de55b6',
     files: [
       { path: 'text_encoder/pytorch_model-00002-of-00002.bin', bytes: 9597031749, sha256: '4f68f80678299ac59f69b3550ebd47b966571920d8f9e71f42ab61fabaaed868' },
@@ -124,7 +130,9 @@ const CATALOG = [
   {
     id: 'video-pro', group: 'Video',
     friendlyName: 'Video Pro', technical: 'Wan 2.2 TI2V-5B',
-    installType: 'hf', repo: 'Wan-AI/Wan2.2-TI2V-5B',
+    installType: 'hf',
+    unavailable: 'Not available yet: no video workflow exists — main/comfy-workflows.js has only sdxlTxt2Img; there is no Wan 2.2 run path in the app. Withheld until a real video workflow is implemented and verified.',
+    unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.', repo: 'Wan-AI/Wan2.2-TI2V-5B',
     commit: '921dbaf3f1674a56f47e83fb80a34bac8a8f203e',
     files: [
       { path: 'models_t5_umt5-xxl-enc-bf16.pth', bytes: 11361920418, sha256: '7cace0da2b446bbbbc57d031ab6cf163a3d59b366da94e5afe36745b746fd81d' },
@@ -192,7 +200,9 @@ const CATALOG = [
   {
     id: 'music-studio', group: 'Audio',
     friendlyName: 'Music Studio', technical: 'ACE-Step v1.5',
-    installType: 'hf', repo: 'ACE-Step/Ace-Step1.5',
+    installType: 'hf',
+    unavailable: 'Not available yet: no ACE-Step workflow or run code exists in the app. Withheld until a real music workflow is implemented and verified.',
+    unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.', repo: 'ACE-Step/Ace-Step1.5',
     commit: '19671f406d603126926c1b7e2adc169acbcade22',
     files: [
       { path: 'acestep-v15-turbo/model.safetensors', bytes: 4787825604, sha256: '3f6e0797fad420a39bd33979eb6e840e30989e34a3794e843d23b60ec6e422d7' },
@@ -232,6 +242,8 @@ const CATALOG = [
     id: 'upscaler', group: 'Fix',
     friendlyName: 'Upscaler', technical: 'SwinIR x4 (classical)',
     installType: 'file',
+    unavailable: 'Not available yet: no SwinIR run path exists in the app — the model can be fetched, but nothing executes it. Withheld until a real run path is implemented and verified.',
+    unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.',
     url: 'https://github.com/JingyunLiang/SwinIR/releases/download/v0.0/001_classicalSR_DF2K_s64w8_SwinIR-M_x4.pth',
     fileName: 'swinir_classical_x4.pth', sha256: SWINIR_SHA256,
     sizeMB: 65, sizeBytes: SWINIR_BYTES, vramMB: 2048,
@@ -243,6 +255,8 @@ const CATALOG = [
     id: 'face-restore', group: 'Fix',
     friendlyName: 'Face Restore', technical: 'GFPGAN v1.4',
     installType: 'file',
+    unavailable: 'Not available yet: no GFPGAN run path exists in the app — the model can be fetched, but nothing executes it. Withheld until a real run path is implemented and verified.',
+    unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.',
     url: 'https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth',
     fileName: 'GFPGANv1.4.pth', sha256: 'e2cd4703ab14f4d01fd1383a8a8b266f9a5833dacee8e6a79d3bf21a1b6be5ad',
     sizeMB: 333, sizeBytes: GFPGAN_BYTES, vramMB: 2048,
@@ -253,7 +267,9 @@ const CATALOG = [
   {
     id: 'vision', group: 'Analyze',
     friendlyName: 'Vision', technical: 'Florence-2 large',
-    installType: 'hf', repo: 'microsoft/Florence-2-large',
+    installType: 'hf',
+    unavailable: 'Not available yet: no Florence-2 run path exists in the app — the model can be fetched, but nothing executes it. Withheld until a real run path is implemented and verified.',
+    unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.', repo: 'microsoft/Florence-2-large',
     commit: '21a599d414c4d928c9032694c424fb94458e3594',
     files: [
       { path: 'model.safetensors', bytes: 1553563458, sha256: '4f38ce741c6b71188fe2b3419a55e11917a8a7b321ae2e63c61da0191b0ebad7' },
@@ -278,6 +294,8 @@ const CATALOG = [
     id: 'smart-select', group: 'Edit',
     friendlyName: 'Smart Select', technical: 'SAM 2 (tiny)',
     installType: 'file',
+    unavailable: 'Not available yet: no SAM 2 run path exists in the app — the model can be fetched, but nothing executes it. Withheld until a real run path is implemented and verified.',
+    unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.',
     url: 'https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_tiny.pt',
     fileName: 'sam2_hiera_tiny.pt', sha256: '65b50056e05bcb13694174f51bb6da89c894b57b75ccdf0ba6352c597c5d1125',
     sizeMB: 149, sizeBytes: SAM2_BYTES, vramMB: 2048,
@@ -301,7 +319,9 @@ const CATALOG = [
   {
     id: 'depth-fx', group: 'Analyze',
     friendlyName: 'Depth FX', technical: 'Depth-Anything V2 (small)',
-    installType: 'hf', repo: 'depth-anything/Depth-Anything-V2-Small',
+    installType: 'hf',
+    unavailable: 'Not available yet: no Depth-Anything V2 run path exists in the app — the model can be fetched, but nothing executes it. Withheld until a real run path is implemented and verified.',
+    unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.', repo: 'depth-anything/Depth-Anything-V2-Small',
     commit: '03876f8651c73a60fe4c2c48294e09fcb6838fcf',
     files: [
       { path: 'depth_anything_v2_vits.pth', bytes: 99218434, sha256: '715fade13be8f229f8a70cc02066f656f2423a59effd0579197bbf57860e1378' },
@@ -315,7 +335,9 @@ const CATALOG = [
   {
     id: 'pose-lock', group: 'Analyze',
     friendlyName: 'Pose Lock', technical: 'DWPose',
-    installType: 'hf', repo: 'yzd-v/DWPose',
+    installType: 'hf',
+    unavailable: 'Not available yet: no DWPose run path exists in the app — the model can be fetched, but nothing executes it. Withheld until a real run path is implemented and verified.',
+    unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.', repo: 'yzd-v/DWPose',
     commit: '1a7144101628d69ee7a3768d1ee3a094070dc388',
     files: [
       { path: 'dw-ll_ucoco_384.pth', bytes: 406878486, sha256: '0d9408b13cd863c4e95a149dd31232f88f2a12aa6cf8964ed74d7d97748c7a07' },
@@ -338,7 +360,9 @@ const CATALOG = [
   {
     id: 'bg-remove', group: 'Edit',
     friendlyName: 'BG Remove', technical: 'BiRefNet',
-    installType: 'hf', repo: 'ZhengPeng7/BiRefNet',
+    installType: 'hf',
+    unavailable: 'Not available yet: no BiRefNet run path exists in the app — the model can be fetched, but nothing executes it. Withheld until a real run path is implemented and verified.',
+    unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.', repo: 'ZhengPeng7/BiRefNet',
     commit: 'e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4',
     files: [
       { path: 'model.safetensors', bytes: 444473596, sha256: '9ab37426bf4de0567af6b5d21b16151357149139362e6e8992021b8ce356a154' },
