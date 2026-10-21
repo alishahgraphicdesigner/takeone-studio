@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('takeone', {
   comfyStatus: () => ipcRenderer.invoke('takeone:comfyStatus'),
   comfyGenerate: (root, params) => ipcRenderer.invoke('takeone:comfyGenerate', root, params),
   comfyHistory: (promptId) => ipcRenderer.invoke('takeone:comfyHistory', promptId),
+  comfyInterrupt: () => ipcRenderer.invoke('takeone:comfyInterrupt'),
   brainLearn: (root, context, action, reward) => ipcRenderer.invoke('takeone:brainLearn', root, context, action, reward),
   brainSuggest: (root, context, topK) => ipcRenderer.invoke('takeone:brainSuggest', root, context, topK),
   checkOnline: () => ipcRenderer.invoke('takeone:checkOnline'),
@@ -51,6 +52,11 @@ contextBridge.exposeInMainWorld('takeone', {
   adoptPick: (toolId, root) => ipcRenderer.invoke('takeone:adoptPick', toolId, root),
   onDlEvent: (cb) => ipcRenderer.on('dl-event', (_e, v) => cb(v)),
   onDepEvent: (cb) => ipcRenderer.on('dep-event', (_e, v) => cb(v)),
+  // WO-23/26: AI engine install (one-click engine + model chain)
+  engineInstall: (root) => ipcRenderer.invoke('takeone:engineInstall', root),
+  engineCancel: () => ipcRenderer.invoke('takeone:engineCancel'),
+  engineStatus: (root) => ipcRenderer.invoke('takeone:engineStatus', root),
+  onEngineEvent: (cb) => ipcRenderer.on('engine-event', (_e, v) => cb(v)),
   // Phase C: Library + Studio
   listProjects: (root) => ipcRenderer.invoke('takeone:listProjects', root),
   createProject: (root, name) => ipcRenderer.invoke('takeone:createProject', root, name),

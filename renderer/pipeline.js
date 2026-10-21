@@ -221,19 +221,35 @@
       if (out) out.textContent = 'Starting the engine…';
       try {
         const r = await window.takeone.comfyGenerate(root, { prompt: prompt.trim() });
-        if (!r.ok) { if (out) out.textContent = 'Error: ' + (r.error || r.reason || 'failed'); return; }
+        if (!r.ok) {
+          // WO-27: engine not installed -> plain message + the Install path.
+          if (r.engineMissing) {
+            if (out) out.innerHTML = '<span>The AI engine isn\u2019t installed yet — it\u2019s a one-time setup.</span><br><button class="btn small" id="qgInstallEngine">Install the engine</button>';
+            const ib = document.getElementById('qgInstallEngine');
+            if (ib) ib.addEventListener('click', () => switchView('models'));
+          } else if (out) out.textContent = 'Error: ' + (r.error || r.reason || 'failed');
+          return;
+        }
         const pid = r.promptId;
-        if (out) out.textContent = 'Generating… (this takes a minute on first run)';
+        const port = r.port || 8188; // WO-27: never hardcode 8188 — ComfyUI picks a free port
+        let genCancelled = false;
+        if (out) out.innerHTML = 'Generating… (this takes a minute on first run) <button class="btn small ghost2" id="qgCancel">Cancel</button>';
+        const cancelBtn = document.getElementById('qgCancel');
+        if (cancelBtn) cancelBtn.addEventListener('click', async () => {
+          genCancelled = true;
+          try { await window.takeone.comfyInterrupt(); } catch { /* best effort */ }
+        });
         // Poll for completion (max 5 min)
         for (let i = 0; i < 60; i++) {
           await new Promise((res) => setTimeout(res, 5000));
+          if (genCancelled) { if (out) out.textContent = 'Cancelled.'; return; }
           const h = await window.takeone.comfyHistory(pid);
           if (h.ok && h.history && h.history.outputs) {
             const outs = h.history.outputs;
             const imgNode = Object.values(outs).find((o) => o.images && o.images.length);
             if (imgNode) {
               const img = imgNode.images[0];
-              const url = `http://127.0.0.1:8188/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`;
+              const url = `http://127.0.0.1:${port}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`;
               if (out) out.innerHTML = `<img src="${url}" style="max-width:100%; border-radius:8px; margin-top:8px;" />`;
               break;
             }

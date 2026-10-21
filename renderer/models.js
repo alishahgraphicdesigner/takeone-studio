@@ -78,6 +78,99 @@
     return `<div class="err"><b>Didn\u2019t work.</b> ${esc(st.error)}<br>Nothing was installed. You can try again — no files were left half-written.</div>`;
   }
 
+  // WO-26: one-click engine + model chain on the Image Studio card.
+  // Sizes are honest, from the real constants: engine download 3.54 GB
+  // (engine-lock.json totalBytes 3,529,035,908 + ComfyUI zip 13,509,383),
+  // model 6.6 GB (catalog sizeMB 6616), disk need = engine preflight
+  // (9.7 GB x 1.25 = 12.2 GB) + model 6.6 GB = ~19 GB.
+  const ENGINE = {}; // toolId -> {phase, progress, doneBytes, totalBytes, index, count, why, whatNext}
+  let ENGINE_READY = false;
+  const fmtGB = (b) => (b / 1073741824).toFixed(1) + ' GB';
+
+  function engineChainFor(tool, st) {
+    if (tool.id !== 'image-studio') return '';
+    if (st.unavailable || tool.unavailable) return '';
+    const e = ENGINE[tool.id];
+    // Engine was already installed before page load and no live session -> normal card.
+    if (ENGINE_READY && !e) return '';
+    if (st.state === 'installed') return '';
+    // The model download (Step 2 of 2) took over -> normal download UI.
+    if (e && e.phase === 'ready' && ['downloading', 'verifying', 'installing'].includes(st.state)) {
+      delete ENGINE[tool.id];
+      return '';
+    }
+    const cur = e || { phase: 'idle' };
+    const cancelBtn = `<button class="btn small ghost2" data-act="engine-cancel" data-id="${tool.id}">Cancel</button>`;
+    const bar = (done, total) => {
+      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+      return `<div class="prog" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="Engine install progress"><i style="width:${pct}%"></i></div>`;
+    };
+    switch (cur.phase) {
+      case 'idle':
+        return `<div class="chain"><button class="btn small" data-act="engine-install" data-id="${tool.id}">Install</button>
+          <div class="muted small">One click installs everything: the AI engine (3.5 GB) and the Image Studio model (6.6 GB) — about 10.1 GB to download. Needs about 19 GB free on this drive.</div></div>`;
+      case 'preflight': case 'venv':
+        return `<div class="chain"><div class="progwrap">Step 1 of 2 — Preparing…</div>${cancelBtn}</div>`;
+      case 'downloading': {
+        const t = `<div class="progwrap">Step 1 of 2 — Downloading the engine… ${fmtGB(cur.doneBytes || 0)} of ${fmtGB(cur.totalBytes || 1)}</div>`;
+        return `<div class="chain">${t}${bar(cur.doneBytes || 0, cur.totalBytes || 1)}${cancelBtn}</div>`;
+      }
+      case 'verifying':
+        return `<div class="chain"><div class="progwrap">Step 1 of 2 — Checking the engine files…</div>${cancelBtn}</div>`;
+      case 'installing': {
+        const t = `<div class="progwrap">Step 1 of 2 — Installing… part ${cur.index || '?'} of ${cur.count || 86}</div>`;
+        return `<div class="chain">${t}${bar(cur.doneBytes || 0, cur.totalBytes || 1)}${cancelBtn}</div>`;
+      }
+      case 'finalizing':
+        return `<div class="chain"><div class="progwrap">Step 1 of 2 — Final checks…</div>${cancelBtn}</div>`;
+      case 'ready':
+        return `<div class="chain"><div class="progwrap">Engine ready \u2713 — Step 2 of 2: downloading the model…</div></div>`;
+      case 'failed':
+        return `<div class="chain"><div class="err"><b>Didn\u2019t work.</b> ${esc(cur.why || 'The install did not finish.')}<br>What to do: ${esc(cur.whatNext || 'Try again.')}</div>
+          <button class="btn small" data-act="engine-install" data-id="${tool.id}">Try again</button></div>`;
+      case 'cancelled':
+        return `<div class="chain"><div class="progwrap">Cancelled. Already-downloaded files are kept, so installing again resumes where it stopped.</div>
+          <button class="btn small" data-act="engine-install" data-id="${tool.id}">Install</button></div>`;
+      default: return '';
+    }
+  }
+
+  function handleEngineEvent(toolId, ev) {
+    const e = ENGINE[toolId] || (ENGINE[toolId] = { phase: 'idle' });
+    if (ev.type === 'phase') {
+      e.phase = ev.phase;
+      if (ev.phase === 'ready') {
+        ENGINE_READY = true;
+        // Step 2 of 2: the model download goes through the normal download flow.
+        if (window.takeone.dlStart) window.takeone.dlStart(toolId, ROOT).catch(() => {});
+      }
+    } else if (ev.type === 'download') {
+      e.phase = 'downloading';
+      e.progress = ev.progress; e.doneBytes = ev.doneBytes; e.totalBytes = ev.totalBytes;
+    } else if (ev.type === 'wheel') {
+      e.phase = 'installing';
+      e.index = ev.index; e.count = ev.count;
+      e.doneBytes = ev.doneBytes; e.totalBytes = ev.totalBytes;
+    } else if (ev.type === 'toolStep') {
+      e.phase = ev.step === 2 ? 'ready' : e.phase;
+    }
+    renderNow();
+  }
+
+  function renderNow() {
+    const host = $('#modelCards');
+    if (host) host.innerHTML = suggestions() + groups();
+  }
+
+  // Test hook (WO-26): drive the engine chain with fake events, no IPC needed.
+  window.__engineUI = {
+    event: handleEngineEvent,
+    set: (id, s) => { ENGINE[id] = s; renderNow(); },
+    reset: (id) => { delete ENGINE[id]; ENGINE_READY = false; renderNow(); },
+    setReady: (v) => { ENGINE_READY = v; renderNow(); },
+    render: renderNow,
+  };
+
   // WO-16: only the plain-language user text is shown — dev wording never reaches the user.
   function unavailableFor(tool, st) {
     const msg = st.unavailableUser || tool.unavailableUser;
@@ -120,7 +213,7 @@
       ${unavailableFor(tool, st)}
       ${gateFor(tool, st)}
       ${depsFor(tool, st)}
-      <div class="actions">${actionFor(tool, st)}</div>
+      <div class="actions">${engineChainFor(tool, st) || actionFor(tool, st)}</div>
     </div>`;
   }
 
@@ -319,6 +412,22 @@
         const r = await window.takeone.depInstall(id, ROOT);
         if (!r.ok) notice(r.reason || 'Installation did not finish.');
       }
+      else if (action === 'engine-install') {
+        // WO-26: one-click engine + model chain. The promise resolves with the
+        // engine result; a ready engine auto-starts the model download.
+        ENGINE[tool.id] = { phase: 'starting' };
+        renderNow();
+        const r = await window.takeone.engineInstall(ROOT).catch((err) => ({ ok: false, why: 'The install could not start.', whatNext: String(err && err.message || err) }));
+        if (r && r.ok) { ENGINE[tool.id] = { phase: 'ready' }; }
+        else if (r && /cancelled/i.test(r.why || '')) { ENGINE[tool.id] = { phase: 'cancelled' }; }
+        else { ENGINE[tool.id] = { phase: 'failed', why: (r && r.why) || 'The install did not finish.', whatNext: (r && r.whatNext) || 'Try again.' }; }
+        renderNow();
+        return;
+      }
+      else if (action === 'engine-cancel') {
+        await window.takeone.engineCancel().catch(() => {});
+        return; // the install promise resolves with the cancelled result
+      }
       else if (action === 'external') await window.takeone.openExternal(tool.externalUrl);
       else if (action === 'adopt-open') await window.takeone.openExternal(tool.adoptUrl);
       else if (action === 'adopt-pick') {
@@ -368,6 +477,7 @@
     });
     if (window.takeone.onDlEvent) window.takeone.onDlEvent(() => refreshStates());
     if (window.takeone.onDepEvent) window.takeone.onDepEvent(() => refreshStates());
+    if (window.takeone.onEngineEvent) window.takeone.onEngineEvent((ev) => handleEngineEvent('image-studio', ev));
   }
 
   let SPEED_MBPS = null;
@@ -383,6 +493,11 @@
     }
     CAT = cat.catalog;
     ONLINE = (await window.takeone.checkOnline().catch(() => ({ online: true }))).online;
+    // WO-26: hide the engine chain when the engine is already installed.
+    try {
+      const es = await window.takeone.engineStatus(ROOT).catch(() => null);
+      if (es && es.ready) ENGINE_READY = true;
+    } catch { /* chain shows by default */ }
     const banner = $('#offlineBanner');
     if (banner) banner.hidden = ONLINE;
     await refreshStates();

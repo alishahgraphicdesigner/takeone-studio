@@ -192,9 +192,20 @@ class ComfyManager {
     if (!this.ready) return { ok: false, error: 'ComfyUI is not running.' };
     try {
       const r = await this._post('/prompt', { prompt: workflow });
-      return { ok: true, promptId: r.prompt_id };
+      return { ok: true, promptId: r.prompt_id, port: this.port };
     } catch (e) {
       return { ok: false, error: `Could not queue: ${e.message}` };
+    }
+  }
+
+  /** WO-27: interrupt the current generation (user pressed Cancel). */
+  async interrupt() {
+    if (!this.ready) return { ok: false, error: 'ComfyUI is not running.' };
+    try {
+      await this._post('/interrupt', {});
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: `Could not cancel: ${e.message}` };
     }
   }
 

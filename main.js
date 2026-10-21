@@ -1016,6 +1016,13 @@ function wireIPC() {
   });
   ipcMain.handle('takeone:comfyGenerate', async (e, root, params) => {
     const r = root || defaultRoot();
+    // WO-27: plain-words engine check BEFORE touching ComfyUI — the renderer
+    // turns engineMissing into "Install the engine" guidance.
+    try {
+      engine.assertEngineReady(r);
+    } catch (err) {
+      return { ok: false, engineMissing: true, error: err.message };
+    }
     const mgr = getComfy(r);
     if (!mgr.isRunning()) {
       const st = await mgr.start();
@@ -1035,6 +1042,10 @@ function wireIPC() {
   ipcMain.handle('takeone:comfyHistory', async (e, promptId) => {
     if (!comfyMgr) return { ok: false, error: 'Not running.' };
     return comfyMgr.getHistory(promptId);
+  });
+  ipcMain.handle('takeone:comfyInterrupt', async () => {
+    if (!comfyMgr) return { ok: false, error: 'Not running.' };
+    return comfyMgr.interrupt();
   });
 
   // ── TakeOne Brain (fly-inspired associative learning) ──
