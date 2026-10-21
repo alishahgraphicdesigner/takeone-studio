@@ -32,10 +32,10 @@ jobs:
       - name: Check WO-21 engine.js exists
         run: |
           if (-not (Test-Path "main/engine.js")) {
-            Write-Error "WO-21 IMPLEMENTATION PENDING: main/engine.js does not exist yet — only the design doc (round9/wo21/ENGINE-DESIGN.md) has been delivered. This workflow calls installEngine()/enginePython()/engineRoot() from that module, so it cannot proceed. Marking Failed honestly; it will run for real once the WO-21 implementation lands."
+            Write-Error "WO-21 IMPLEMENTATION PENDING: main/engine.js does not exist yet — only the design doc (round9/wo21/ENGINE-DESIGN.md) has been delivered. This workflow calls installEngine()/venvPython()/engineRoot() from that module, so it cannot proceed. Marking Failed honestly; it will run for real once the WO-21 implementation lands."
             exit 1
           }
-          node -e "const e = require('./main/engine.js'); for (const f of ['installEngine','engineRoot','enginePython','readEngineState']) { if (typeof e[f] !== 'function') { throw new Error('main/engine.js missing function: ' + f); } } console.log('engine.js API OK')"
+          node -e "const e = require('./main/engine.js'); for (const f of ['installEngine','engineRoot','venvPython','readEngineState']) { if (typeof e[f] !== 'function') { throw new Error('main/engine.js missing function: ' + f); } } console.log('engine.js API OK')"
 
       - name: Run end-to-end image generation (CPU)
         env:

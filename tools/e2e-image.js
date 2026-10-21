@@ -168,7 +168,7 @@ async function main() {
   const { sdxlTxt2Img } = require('../main/comfy-workflows.js');
   const mgr = new ComfyManager({
     root: ROOT,
-    pythonExe: engine.enginePython(ROOT),
+    pythonExe: engine.venvPython(ROOT),
     comfyDir: path.join(engine.engineRoot(ROOT), 'ComfyUI'),
   });
   const st = await mgr.start();
