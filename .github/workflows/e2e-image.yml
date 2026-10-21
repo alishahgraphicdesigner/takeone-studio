@@ -1,9 +1,11 @@
 name: e2e-image
-# WO-22: "Studio se asli output file" CI mein sabit karo (Windows runner, CPU).
+# WO-22 + WO-24: "Studio se asli output file" CI mein sabit karo (Windows runner, CPU).
 # Engine ko main/engine.js ki functions se install karta hai (WO-21 — wahi code
 # jo app chalayegi), Image Studio ka checkpoint manifest se, ComfyUI --cpu par
 # comfy-workflows.js ka asli sdxlTxt2Img workflow: 1 prompt, 512x512, 4 steps.
-# Output PNG: file exist + 512x512 dimensions + pixel variance > threshold.
+# Output PNG: file exist + 512x512 dimensions + pixel variance > threshold +
+# spatial correlation > 0.3 (noise nahi). PNG artifact upload hota hai.
+# TAKEONE_SKIP_GPU_CHECK=1: runner par NVIDIA GPU nahi (failure kinds unit-tested).
 # RAM/waqt par fail ho to Failed likha jata hai, raw log ke saath.
 on:
   workflow_dispatch:
@@ -11,7 +13,7 @@ on:
 jobs:
   e2e-image:
     runs-on: windows-latest
-    timeout-minutes: 240
+    timeout-minutes: 90
     defaults:
       run:
         shell: pwsh
@@ -20,6 +22,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
+
+      - name: Free disk (preflight print)
+        run: |
+          $d = Get-PSDrive C
+          "FREE DISK on C: {0:N1} GB" -f ($d.Free / 1GB) | Out-File -Append $env:GITHUB_STEP_SUMMARY
+          Get-PSDrive C | Format-Table -AutoSize
 
       - name: Check WO-21 engine.js exists
         run: |
@@ -30,6 +38,8 @@ jobs:
           node -e "const e = require('./main/engine.js'); for (const f of ['installEngine','engineRoot','enginePython','readEngineState']) { if (typeof e[f] !== 'function') { throw new Error('main/engine.js missing function: ' + f); } } console.log('engine.js API OK')"
 
       - name: Run end-to-end image generation (CPU)
+        env:
+          TAKEONE_SKIP_GPU_CHECK: "1"
         run: |
           $env:TAKEONE_E2E_ROOT = Join-Path $PWD ".e2e-root"
           node tools/e2e-image.js 2>&1 | Tee-Object -FilePath e2e-image.log
@@ -38,6 +48,7 @@ jobs:
             Write-Error "E2E IMAGE FAILED (raw log above)"
             exit 1
           }
+        timeout-minutes: 75
 
       - name: Upload generated PNG
         if: always()

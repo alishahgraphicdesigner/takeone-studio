@@ -24,6 +24,7 @@ const PROMPT = process.env.TAKEONE_E2E_PROMPT || 'a small lighthouse on a rocky 
 const CKPT_URL = 'https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step.safetensors';
 const CKPT_SHA256 = 'e0d996ee0013e79d9d3561f50fcafb9a17e3ff07b780358e3b66d67932c4d490'; // from main/catalog.js (image-studio)
 const VARIANCE_THRESHOLD = 50; // mean squared deviation of grayscale; solid/black images score ~0
+const CORRELATION_THRESHOLD = 0.3; // adjacent-pixel correlation; noise ~0, real output 0.8+
 
 function log(...a) { console.log('[e2e]', ...a); }
 
@@ -114,12 +115,31 @@ function pixelVariance(gray) {
   return sq / gray.length;
 }
 
+/** Pearson correlation between horizontally adjacent grayscale pixels. */
+function spatialCorrelation(gray, width, height) {
+  const n = (width - 1) * height;
+  let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    for (let x = 0; x < width - 1; x++) {
+      const a = gray[row + x], b = gray[row + x + 1];
+      sx += a; sy += b; sxx += a * a; syy += b * b; sxy += a * b;
+    }
+  }
+  const denom = Math.sqrt((n * sxx - sx * sx) * (n * syy - sy * sy));
+  if (!denom) return 0;
+  return (n * sxy - sx * sy) / denom;
+}
+
 async function main() {
   log('root:', ROOT);
   // 1. Engine install — the same function the app will call (WO-21).
   const engine = require('../main/engine.js');
   log('installing engine (same code the app runs)...');
   const inst = await engine.installEngine(ROOT, {
+    // GitHub runners have no NVIDIA GPU; the GPU failure kinds are unit-tested
+    // and the real GPU path is proven on the user's own PC.
+    skipGpuCheck: process.env.TAKEONE_SKIP_GPU_CHECK === '1',
     onEvent: (e) => log('engine:', e.phase, e.detail || ''),
   });
   if (!inst.ok) throw new Error(`engine install failed: ${inst.why} — ${inst.whatNext}`);
@@ -187,6 +207,11 @@ async function main() {
   const v = pixelVariance(gray);
   log(`pixel variance: ${v.toFixed(1)} (threshold ${VARIANCE_THRESHOLD})`);
   if (v <= VARIANCE_THRESHOLD) throw new Error('image looks black or solid-colour — variance too low');
+  // Spatial correlation: real generations have structure (neighbouring pixels
+  // correlate); pure noise does not. Threshold 0.3 (typical SDXL output: 0.8+).
+  const c = spatialCorrelation(gray, width, height);
+  log(`spatial correlation: ${c.toFixed(3)} (threshold ${CORRELATION_THRESHOLD})`);
+  if (c <= CORRELATION_THRESHOLD) throw new Error('image looks like noise — spatial correlation too low');
 
   const outArtifact = path.join(process.cwd(), 'e2e-output.png');
   fs.copyFileSync(full, outArtifact);

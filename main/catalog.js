@@ -65,6 +65,8 @@ const CATALOG = [
     license: 'OpenRAIL++-M', licenseNote: 'Free to use, including commercially, within the license use-restrictions (see About → Licenses).',
     category: 'image',
     why: 'Lighter image model for smaller GPUs.',
+    unavailable: 'Not available yet: image-lite shares image-studio\u2019s SDXL workflow but has no workflow or end-to-end test of its own. Withheld until its own workflow and e2e exist.',
+    unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.',
   },
   {
     id: 'video-studio', group: 'Video',
