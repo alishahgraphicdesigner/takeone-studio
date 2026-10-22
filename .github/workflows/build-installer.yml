@@ -21,7 +21,8 @@ jobs:
         run: npm ci
 
       - name: Build installer (electron-builder NSIS)
-        run: node build/dist.js
+        # Release candidate only: build the .exe, do NOT publish a GitHub release.
+        run: node build/dist.js --publish never
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4

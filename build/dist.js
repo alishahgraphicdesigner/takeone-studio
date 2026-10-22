@@ -14,4 +14,6 @@ if (process.platform !== 'win32') {
 }
 
 execSync('node build/make-readme.js', { stdio: 'inherit' });
-execSync('npx electron-builder --win nsis', { stdio: 'inherit', env: process.env });
+// Forward extra CLI args (e.g. "--publish never" from CI) to electron-builder.
+const extraArgs = process.argv.slice(2).join(' ');
+execSync(`npx electron-builder --win nsis${extraArgs ? ' ' + extraArgs : ''}`, { stdio: 'inherit', env: process.env });
