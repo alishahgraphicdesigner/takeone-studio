@@ -20,11 +20,12 @@ const COMFY_PORT = 8188;
 const START_TIMEOUT_MS = 120000; // 2 min for ComfyUI to boot (model loading)
 
 class ComfyManager {
-  constructor({ root, pythonExe, comfyDir, onEvent }) {
+  constructor({ root, pythonExe, comfyDir, onEvent, cpu }) {
     this.root = root;
     this.pythonExe = pythonExe;
     this.comfyDir = comfyDir;
     this.onEvent = onEvent || (() => {});
+    this.cpu = !!cpu; // e2e CI has no NVIDIA GPU — ComfyUI must boot with --cpu
     this.proc = null;
     this.port = COMFY_PORT;
     this.ready = false;
@@ -81,6 +82,7 @@ class ComfyManager {
    */
   async _comfyArgs(mainPy) {
     const args = [mainPy, '--port', String(this.port), '--listen', '127.0.0.1', '--disable-auto-launch'];
+    if (this.cpu) args.push('--cpu');
     let helpOut = '';
     try {
       helpOut = await new Promise((resolve) => {

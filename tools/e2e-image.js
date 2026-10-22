@@ -175,13 +175,20 @@ async function main() {
   // until then this driver documents the intended call.)
   const { ComfyManager } = require('../main/comfy.js');
   const { sdxlTxt2Img } = require('../main/comfy-workflows.js');
+  const comfyLog = [];
   const mgr = new ComfyManager({
     root: ROOT,
     pythonExe: engine.venvPython(ROOT),
     comfyDir: path.join(engine.engineRoot(ROOT), 'ComfyUI'),
+    cpu: true, // CI runners have no NVIDIA GPU
+    onEvent: (t, e) => { if (t === 'log' && e && e.line) { comfyLog.push(e.line); if (comfyLog.length > 40) comfyLog.shift(); } },
   });
   const st = await mgr.start();
-  if (!st.ok) throw new Error('ComfyUI failed to start: ' + st.error);
+  if (!st.ok) {
+    log('ComfyUI child output (tail):');
+    for (const l of comfyLog.slice(-15)) log('  | ' + l);
+    throw new Error('ComfyUI failed to start: ' + st.error);
+  }
 
   // 4. Queue the REAL workflow: 1 prompt, 512x512, 4 steps.
   const wf = sdxlTxt2Img({
