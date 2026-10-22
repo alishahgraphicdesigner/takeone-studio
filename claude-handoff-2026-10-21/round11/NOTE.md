@@ -60,9 +60,21 @@ prints the line, then fails honestly on non-zero.
 ## WO-31 — Implemented + Tested (condition MET)
 WO-28 Passed with the real PNG (variance 3304 > 50, correlation 0.999 > 0.3), so:
 package.json version 2.2.9 → 2.2.10 (patch only); new workflow build-installer.yml
-(manual dispatch) runs electron-builder NSIS and uploads the artifact
-"TakeOne-Studio-2.2.10-setup.exe". Release candidate only — NO GitHub release created.
-Build run 39710238765.
+(manual dispatch) runs electron-builder NSIS with --publish never and uploads the
+artifact "TakeOne-Studio-2.2.10-setup.exe". Release candidate only — NO GitHub release
+created. Build run 39710499911 SUCCESS (first attempt failed: electron-builder demanded
+GH_TOKEN; fixed with --publish never, forwarded through build/dist.js).
+CI at HEAD: verify 39710498340 SUCCESS, catalog-gate 39710498312 SUCCESS,
+build-installer 39710499911 SUCCESS.
+
+Fingerprint (HEAD 35db3825b42e6718b1be6610a8725b6fdedb05c9, CI Evidence step,
+verify 39710498340 — full block in logs/verify-39710498340-SUCCESS.log):
+b09fe18215ff43e1776c3da201d864e9bff6695c7c7ce8ec1ad74dc044035922  main/engine.js
+ee55ae2ac31cd81cca21c5103386c9d1814e4a261923bfe511a266c4dc28cb76  main/comfy.js
+e8eabe43bac73f66cae0a885b5050e624ebf23df68db53e6bfba421adb5085c9  tools/e2e-image.js
+b3bb3b90a55ffe9ee48e7856f748274d596bfac9e1b91c38bf6b585c8b0be78c  package.json
+316d6e77a3cbfaf749b6fdf2b79339d573fe003ca5b5aab1e674080e49f7bf68  .github/workflows/build-installer.yml
+8c4a918636c83d483f6110caa90551fc2af45491f6a4349098eb83fdba662f99  .github/workflows/e2e-image.yml
 
 ## Decisions I made (Claude review karega)
 1. Attempts 5–8 (beyond the authorized 4th): each failed attempt root-caused a REAL,

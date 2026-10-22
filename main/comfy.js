@@ -114,6 +114,8 @@ class ComfyManager {
 
       this.proc.stdout.on('data', (d) => {
         const s = String(d);
+        // WO-32: persist child output for the diagnostics report.
+        try { require('./diagnostics.js').appendComfyLog(this.root, '[out] ' + s.trim()); } catch {}
         // ComfyUI prints "To see the GUI go to: http://127.0.0.1:8188" when ready
         // (usually on stderr — see below; stdout kept as a fallback).
         if (s.includes('To see the GUI') || s.includes('Starting server')) this._onReadySignal(done);
@@ -124,6 +126,8 @@ class ComfyManager {
         // NOTE: ComfyUI prints its startup banner ("To see the GUI…") on STDERR,
         // not stdout — so the ready signal is checked here too.
         const s = String(d).trim();
+        // WO-32: persist child output for the diagnostics report.
+        try { if (s) require('./diagnostics.js').appendComfyLog(this.root, '[err] ' + s.slice(0, 500)); } catch {}
         if (s) this.onEvent('log', { line: s.slice(0, 200) });
         if (s.includes('To see the GUI') || s.includes('Starting server')) this._onReadySignal(done);
       });

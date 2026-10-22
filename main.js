@@ -1006,6 +1006,16 @@ function wireIPC() {
     const r = root || defaultRoot();
     return { ok: true, ready: engine.engineReady(r), state: engine.readEngineState(r) };
   });
+  // WO-32: one-click diagnostics report (plain text, clipboard; user names masked, no secrets).
+  ipcMain.handle('takeone:diagnostics', async (e, root) => {
+    try {
+      const r = root || defaultRoot();
+      const report = require('./main/diagnostics.js').buildDiagnosticsReport(r);
+      return { ok: true, report };
+    } catch (err) {
+      return { ok: false, reason: 'Could not build the diagnostics report.' };
+    }
+  });
   ipcMain.handle('takeone:comfyStart', async (e, root) => {
     const r = root || defaultRoot();
     return getComfy(r).start();

@@ -71,7 +71,20 @@
       card('Language', 'English') +
       card('PC check', pc.measuredAt ? 'Completed ' + new Date(pc.measuredAt).toLocaleString() : 'Not run',
         pc.speedMbps !== null && pc.speedMbps !== undefined ? `Download speed: ${pc.speedMbps} Mbps (measured)` : 'Download speed: not measured') +
-      card('TakeOne folder', shownRoot, `<button class="link" id="showFolder2">Show in folder</button> <button class="link" id="changeFolder2">Change...</button>`);
+      card('TakeOne folder', shownRoot, `<button class="link" id="showFolder2">Show in folder</button> <button class="link" id="changeFolder2">Change...</button>`) +
+      // WO-32: one-click diagnostics — plain-text report on the clipboard (user names masked, no secrets).
+      card('Diagnostics', 'App version, Windows, GPU, engine status and recent logs as plain text.',
+        `<button class="link" id="copyDiagnostics">Copy diagnostics</button> <span class="muted small" id="diagNote"></span>`);
+    $('#copyDiagnostics').addEventListener('click', async () => {
+      const note = $('#diagNote');
+      try {
+        const r = await window.takeone.diagnostics(root);
+        if (!r || !r.ok || !r.report) { note.textContent = 'Could not build the report.'; return; }
+        await navigator.clipboard.writeText(r.report);
+        note.textContent = 'Copied — paste it anywhere.';
+      } catch { note.textContent = 'Could not copy.'; }
+      setTimeout(() => { note.textContent = ''; }, 5000);
+    });
     $('#showFolder2').addEventListener('click', () => window.takeone.showInFolder(root));
     $('#changeFolder2').addEventListener('click', async () => {
       const p = await window.takeone.pickFolder();

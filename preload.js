@@ -56,6 +56,8 @@ contextBridge.exposeInMainWorld('takeone', {
   engineInstall: (root) => ipcRenderer.invoke('takeone:engineInstall', root),
   engineCancel: () => ipcRenderer.invoke('takeone:engineCancel'),
   engineStatus: (root) => ipcRenderer.invoke('takeone:engineStatus', root),
+  // WO-32: one-click diagnostics report
+  diagnostics: (root) => ipcRenderer.invoke('takeone:diagnostics', root),
   onEngineEvent: (cb) => ipcRenderer.on('engine-event', (_e, v) => cb(v)),
   // Phase C: Library + Studio
   listProjects: (root) => ipcRenderer.invoke('takeone:listProjects', root),
