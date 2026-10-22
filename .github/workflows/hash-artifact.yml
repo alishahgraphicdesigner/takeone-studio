@@ -24,11 +24,17 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          run-id: ${{ inputs.run_id }}
-          name: ${{ inputs.artifact_name }}
-          path: artifact
+      # actions/download-artifact@v4 with run-id could not find the artifact
+      # (tried twice); the gh API works reliably instead.
+      - name: Download artifact via gh API
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $artId = gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/${{ inputs.run_id }}/artifacts" --jq '.artifacts[] | select(.name=="${{ inputs.artifact_name }}") | .id'
+          if (-not $artId) { Write-Error "artifact '${{ inputs.artifact_name }}' not found on run ${{ inputs.run_id }}"; exit 1 }
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts/$artId/zip" > artifact.zip
+          Expand-Archive -Path artifact.zip -DestinationPath artifact -Force
 
       - name: SHA256 (CI-computed)
         run: |
