@@ -47,7 +47,7 @@ describe('buildDiagnosticsReport', () => {
   it('contains every required section', async () => {
     const r = await diag.buildDiagnosticsReport('C:\\TakeOne', over);
     for (const need of ['TakeOne Studio diagnostics', 'App version: 2.2.10', 'Windows:', 'GPU:',
-      'Engine:', 'Free disk:', 'App log (last 100 lines)', 'ComfyUI log (last 100 lines)']) {
+      'Engine:', 'Free disk:', 'App log (current session only, last 100 lines)', 'ComfyUI log (last 100 lines)']) {
       assert.ok(r.includes(need), 'missing section: ' + need);
     }
   });
@@ -121,5 +121,53 @@ describe('WO-35: nvidia-smi never blocks the report', () => {
   it('working nvidia-smi: name + driver parsed', async () => {
     const r = await diag.queryGpu(async () => ({ stdout: 'NVIDIA GeForce RTX 5070 Ti, 616.92\n' }));
     assert.equal(r, 'NVIDIA GeForce RTX 5070 Ti, driver 616.92');
+  });
+});
+
+describe('WO-36: Engine section', () => {
+  const base = { version: '2.2.12', windows: 'w', engineSummary: 's', disk: 'd', comfyLog: 'c' };
+  it('shows lastError, OneDrive, venv, security sections', async () => {
+    const r = await diag.buildDiagnosticsReport('/tmp/x', {
+      ...base,
+      appLog: 'session log here',
+      engineSection: [
+        'Root: C:\\Users\\...\\Documents\\TakeOne\\.engine',
+        'OneDrive folder: YES — may cause file locks',
+        'Shipped python: C:\\x\\.python\\python.exe (version 3.11.17)',
+        'Engine venv: present (C:\\x\\.engine\\venv)',
+        'Last error: step=venv code=1 at=2026-10-22T00:00:00Z',
+        'Last error tail:\nAccess is denied',
+        'Controlled Folder Access: on',
+        'Defender real-time protection: on',
+      ].join('\n'),
+    });
+    for (const s of ['--- Engine ---', 'Root:', 'OneDrive folder:', 'Shipped python:',
+                     'Engine venv:', 'Last error:', 'Controlled Folder Access:',
+                     'Defender real-time protection:']) {
+      assert.ok(r.includes(s), `missing section: ${s}`);
+    }
+  });
+  it('isOneDrivePath detects OneDrive folders', () => {
+    assert.equal(diag.isOneDrivePath('C:\\Users\\a\\OneDrive\\Documents\\TakeOne\\.engine'), true);
+    assert.equal(diag.isOneDrivePath('C:\\TakeOne\\.engine'), false);
+  });
+  it('querySecurity: failure -> unknown (acceptable)', async () => {
+    const s = await diag.querySecurity(async () => { throw new Error('no powershell'); });
+    assert.deepEqual(s, { controlledFolderAccess: 'unknown', defenderRealTime: 'unknown' });
+  });
+  it('querySecurity: hanging powershell -> unknown within ~5 s', async () => {
+    const t0 = Date.now();
+    const s = await diag.querySecurity(() => new Promise(() => {}));
+    assert.ok(Date.now() - t0 < 7000, 'must resolve via timeout');
+    assert.equal(s.controlledFolderAccess, 'unknown');
+  });
+  it('sessionLogTail: only lines after the last TOP-OF-FILE', () => {
+    const p = require('path').join(require('os').tmpdir(), 'diag-session-test.log');
+    fs.writeFileSync(p, '2026-01-01 old line 1\n2026-01-01 old line 2\n2026-10-22T10:00 TOP-OF-FILE\n2026-10-22T10:01 new line 1\n2026-10-22T10:02 ENGINE: FAIL step=venv\n');
+    const tail = diag.sessionLogTail(p, 100);
+    assert.ok(!tail.includes('old line'), 'old session must not appear');
+    assert.ok(tail.includes('new line 1'), tail);
+    assert.ok(tail.includes('ENGINE: FAIL step=venv'), 'engine events included');
+    fs.rmSync(p);
   });
 });

@@ -108,6 +108,90 @@ function appendComfyLog(root, line) {
 const fmtGB = (b) => (b / 1073741824).toFixed(1) + ' GB';
 
 /**
+ * WO-36: Windows Security posture via PowerShell (async, 5 s timeout).
+ * Returns { controlledFolderAccess, defenderRealTime } — each is
+ * 'on' / 'off' / 'audit' / 'unknown' ('unknown' is an acceptable answer).
+ * `runExec` is injectable for tests.
+ */
+async function querySecurity(runExec) {
+  const run = runExec || promisify(execFile);
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('security query timed out')), GPU_QUERY_TIMEOUT_MS));
+  const ps = async (code) => {
+    const { stdout } = await Promise.race([
+      run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', code],
+        { timeout: GPU_QUERY_TIMEOUT_MS, windowsHide: true }),
+      timeout,
+    ]);
+    return String(stdout || '').trim();
+  };
+  const out = { controlledFolderAccess: 'unknown', defenderRealTime: 'unknown' };
+  try {
+    // 0 = off, 1 = on, 2 = audit mode
+    const cfa = await ps('(Get-MpPreference).EnableControlledFolderAccess');
+    out.controlledFolderAccess = cfa === '1' ? 'on' : cfa === '2' ? 'audit' : cfa === '0' ? 'off' : 'unknown';
+  } catch { /* unknown stays */ }
+  try {
+    const rt = await ps('(Get-MpComputerStatus).RealTimeProtectionEnabled');
+    out.defenderRealTime = /^true$/i.test(rt) ? 'on' : /^false$/i.test(rt) ? 'off' : 'unknown';
+  } catch { /* unknown stays */ }
+  return out;
+}
+
+/** WO-36: is this path inside a OneDrive-synced folder? (heuristic) */
+function isOneDrivePath(p) {
+  return /onedrive/i.test(String(p || ''));
+}
+
+/**
+ * WO-36: session-scoped app log tail — only lines AFTER the last TOP-OF-FILE
+ * marker (the current session). Never shows older sessions.
+ */
+function sessionLogTail(logPath, n = LOG_TAIL_LINES) {
+  let text = '';
+  try { text = fs.readFileSync(logPath, 'utf8'); } catch { return '(no app log yet)'; }
+  const marker = 'TOP-OF-FILE';
+  const idx = text.lastIndexOf(marker);
+  const session = idx >= 0 ? text.slice(idx) : text;
+  const lines = session.split(/\r?\n/);
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return lines.slice(-n).join('\n') || '(empty session log)';
+}
+
+/**
+ * WO-36: the Engine section of the diagnostics report.
+ * `over` injects: engineState, security, shippedPythonVer.
+ */
+async function engineSection(root, over = {}) {
+  const engine = require('./engine.js');
+  const st = over.engineState !== undefined ? over.engineState
+    : (() => { try { return engine.readEngineState(root); } catch { return null; } })();
+  const er = engine.engineRoot(root);
+  const lines = [];
+  lines.push(`Root: ${er}${st && st.engineRootOverride ? ' (override active)' : ''}`);
+  lines.push(`OneDrive folder: ${isOneDrivePath(er) || isOneDrivePath(root) ? 'YES — may cause file locks' : 'no'}`);
+  const shipVer = over.shippedPythonVer !== undefined ? over.shippedPythonVer
+    : await engine.shippedPythonVersion(root).catch(() => null);
+  const shipExe = engine.shippedPythonExe(root);
+  lines.push(`Shipped python: ${shipExe} ${shipVer ? `(version ${shipVer})` : '(missing)'}`);
+  const venvPy = engine.venvPython(root);
+  const venvPresent = fs.existsSync(venvPy);
+  lines.push(`Engine venv: ${venvPresent ? 'present' : 'MISSING'} (${venvPy})`);
+  if (st && st.lastError) {
+    const le = st.lastError;
+    lines.push(`Last error: step=${le.step} code=${le.code} at=${le.at}`);
+    const tail = String(le.tail || '').split('\n').slice(-10).join('\n');
+    if (tail) lines.push(`Last error tail:\n${tail}`);
+  } else {
+    lines.push('Last error: none recorded');
+  }
+  const sec = over.security !== undefined ? over.security : await querySecurity(over.securityExec);
+  lines.push(`Controlled Folder Access: ${sec.controlledFolderAccess}`);
+  lines.push(`Defender real-time protection: ${sec.defenderRealTime}`);
+  return lines.join('\n');
+}
+
+/**
  * Build the full plain-text diagnostics report (async — the GPU query never
  * blocks the calling thread; see WO-35).
  * `over` lets tests inject every data source; defaults read the real machine.
@@ -144,8 +228,12 @@ async function buildDiagnosticsReport(root, over = {}) {
       return 'unknown';
     }
   });
-  const appLog = d('appLog', () => tailFile(path.join(os.tmpdir(), 'takeone-startup.log'), LOG_TAIL_LINES));
+  const appLog = d('appLog', () => sessionLogTail(path.join(os.tmpdir(), 'takeone-startup.log'), LOG_TAIL_LINES));
   const comfyLog = d('comfyLog', () => tailFile(comfyLogPath(root), LOG_TAIL_LINES));
+  // WO-36: Engine section — lastError, root (masked later), OneDrive, shipped
+  // python, venv presence, Controlled Folder Access + Defender status.
+  const engSection = over.engineSection !== undefined ? over.engineSection
+    : await engineSection(root, over);
 
   const report = [
     'TakeOne Studio diagnostics',
@@ -156,7 +244,10 @@ async function buildDiagnosticsReport(root, over = {}) {
     `Engine: ${engineSummary}`,
     `Free disk: ${disk}`,
     '',
-    `--- App log (last ${LOG_TAIL_LINES} lines) ---`,
+    '--- Engine ---',
+    engSection,
+    '',
+    `--- App log (current session only, last ${LOG_TAIL_LINES} lines) ---`,
     appLog,
     '',
     `--- ComfyUI log (last ${LOG_TAIL_LINES} lines) ---`,
@@ -170,6 +261,7 @@ async function buildDiagnosticsReport(root, over = {}) {
 
 module.exports = {
   buildDiagnosticsReport, maskReport, maskUserName, scrubSecrets,
-  tailFile, comfyLogPath, appendComfyLog, queryGpu,
+  tailFile, sessionLogTail, comfyLogPath, appendComfyLog, queryGpu,
+  querySecurity, isOneDrivePath, engineSection,
   LOG_TAIL_LINES, GPU_QUERY_TIMEOUT_MS,
 };

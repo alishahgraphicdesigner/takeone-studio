@@ -59,7 +59,25 @@ const COMFYUI_ZIP_BYTES = 13509383;
 
 /* ---------------------------------------------------------------- paths */
 
-function engineRoot(root) { return path.join(root, ENGINE_DIRNAME); }
+/** WO-36: the engine root can be overridden (venv fallback to %LOCALAPPDATA%).
+ *  The override is stored in the state file at the DEFAULT location, so
+ *  engineRoot() finds it on every run. All engine paths derive from here. */
+function defaultEngineRoot(root) { return path.join(root, ENGINE_DIRNAME); }
+function localAppDataEngineRoot() {
+  const lad = process.env.LOCALAPPDATA;
+  if (!lad) return null;
+  return path.join(lad, 'TakeOne', 'engine');
+}
+function engineRoot(root) {
+  const def = defaultEngineRoot(root);
+  try {
+    const st = JSON.parse(fs.readFileSync(path.join(def, STATE_FILENAME), 'utf8'));
+    if (st && typeof st.engineRootOverride === 'string' && st.engineRootOverride) {
+      return st.engineRootOverride;
+    }
+  } catch { /* no state yet — default location */ }
+  return def;
+}
 function engineStatePath(root) { return path.join(engineRoot(root), STATE_FILENAME); }
 function venvDir(root) { return path.join(engineRoot(root), VENV_DIRNAME); }
 function wheelhouseDir(root) { return path.join(engineRoot(root), WHEELHOUSE_DIRNAME); }
@@ -244,6 +262,46 @@ function cancelledResult(freedBytes) {
   };
 }
 
+/* ------------------------------------------------------- WO-36: failure evidence */
+
+/** Last N lines of a child process's output (for state.lastError.tail). */
+function tailLines(text, n = 30) {
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  // Drop the trailing empty line a final newline produces.
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  return lines.slice(-n).join('\n');
+}
+
+/** Append to the app log (takeone-startup.log) — engine events land here. */
+function engineLog(msg) {
+  try {
+    if (global.__takeoneLog) { global.__takeoneLog('ENGINE: ' + msg); return; }
+    const lp = path.join(os.tmpdir(), 'takeone-startup.log');
+    fs.appendFileSync(lp, new Date().toISOString() + ' ENGINE: ' + msg + '\n');
+  } catch { /* logging never breaks the install */ }
+}
+
+/**
+ * WO-36: record a failing child step. state.lastError = {step, code, tail, at}.
+ * The UI message stays in plain words; the detail lives here + the app log,
+ * and surfaces only in the diagnostics report.
+ */
+function recordLastError(root, state, step, result) {
+  const tail = tailLines(
+    [result && result.err, result && result.out].filter(Boolean).join('\n'), 30);
+  state.lastError = {
+    step,
+    code: result && result.code !== undefined ? result.code : null,
+    tail: tail.slice(0, 4000), // cap: the state file must stay small
+    at: new Date().toISOString(),
+  };
+  engineLog(`FAIL step=${step} code=${state.lastError.code}\n${tail}`);
+  writeEngineState(root, state);
+  return state.lastError;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 async function runPython(exe, args, opts = {}) {
   return new Promise((resolve) => {
     const p = spawn(exe, args, { windowsHide: true, ...opts });
@@ -347,6 +405,9 @@ async function installEngine(root, opts = {}) {
   if (wasCancelled()) return cancelledResult(0);
 
   // ---- venv: create from the shipped python, rebuild if it changed (amendment 3)
+  // WO-36: on failure (a) remove dir, wait 2 s, retry once at the same location;
+  // (b) then switch the whole engine root to %LOCALAPPDATA%\TakeOne\engine and
+  // retry there. Downloads happen AFTER the venv, so nothing needs migrating.
   const shipVer = await shippedPythonVersion(root, deps.runPython && ((exe, args) => deps.runPython(exe, args)));
   if (!shipVer) {
     return failResult(
@@ -360,8 +421,39 @@ async function installEngine(root, opts = {}) {
   if (venvNeedsRebuild) {
     E('phase', { phase: 'venv' });
     try { fs.rmSync(venvDir(root), { recursive: true, force: true }); } catch { /* ignore */ }
-    const r = await runPy(shipExe, ['-m', 'venv', venvDir(root)]);
+    let r = await runPy(shipExe, ['-m', 'venv', venvDir(root)]);
     if (!r.ok) {
+      // WO-36(a): one retry after clearing the dir and waiting 2 s
+      // (antivirus/file locks often clear on their own).
+      recordLastError(root, state, 'venv', r);
+      engineLog(`venv attempt 1 failed at ${venvDir(root)} — clearing dir, waiting 2 s, retrying once`);
+      try { fs.rmSync(venvDir(root), { recursive: true, force: true }); } catch { /* ignore */ }
+      await sleep(2000);
+      r = await runPy(shipExe, ['-m', 'venv', venvDir(root)]);
+    }
+    if (!r.ok) {
+      // WO-36(b): fall back to %LOCALAPPDATA%\TakeOne\engine for the whole
+      // engine root (venv, wheelhouse, ComfyUI). The override is written to the
+      // state file at the DEFAULT location, so engineRoot() resolves it on
+      // every future run; all engine paths derive from engineRoot().
+      recordLastError(root, state, 'venv', r);
+      const ladEr = localAppDataEngineRoot();
+      if (ladEr && ladEr !== engineRoot(root)) {
+        engineLog(`venv failed twice at default root — falling back to ${ladEr}`);
+        E('phase', { phase: 'venv-fallback', engineRoot: ladEr });
+        const defEr = defaultEngineRoot(root);
+        fs.mkdirSync(defEr, { recursive: true });
+        state.engineRootOverride = ladEr;
+        // Pointer at the default location so engineRoot() finds it next run.
+        fs.writeFileSync(path.join(defEr, STATE_FILENAME),
+          JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2));
+        r = await runPy(shipExe, ['-m', 'venv', venvDir(root)]);
+        if (!r.ok) recordLastError(root, state, 'venv-fallback', r);
+        else { state.lastError = null; engineLog(`venv fallback OK at ${ladEr}`); }
+      }
+    }
+    if (!r.ok) {
+      recordLastError(root, state, 'venv', r);
       return failResult(
         'We could not set up the engine\'s Python workspace.',
         'Restart the install. If it keeps failing, reinstall TakeOne Studio.'
@@ -384,6 +476,7 @@ async function installEngine(root, opts = {}) {
     // WO-29: cancel deletes the in-progress partial (the dep reports freedBytes);
     // verified files stay for resume.
     if (dl.cancelled || wasCancelled()) return cancelledResult(dl.freedBytes);
+    recordLastError(root, state, 'download', { code: null, err: dl.why || '', out: '' });
     return failResult(dl.why || 'Some engine files could not be downloaded.', dl.whatNext || 'Check your internet connection and try again. Downloaded files are kept.');
   }
   if (wasCancelled()) return cancelledResult(0);
@@ -428,7 +521,7 @@ async function installEngine(root, opts = {}) {
     const r = await runPip(args);
     if (!r.ok) {
       state.inProgress = wheels.slice(i).map((x) => x.file);
-      writeEngineState(root, state);
+      recordLastError(root, state, `pip-install:${w.file}`, r);
       return failResult(
         `The engine setup stopped on part ${i + 1} of ${wheels.length}. Nothing is broken — the parts already installed are kept.`,
         'Try the install again; it resumes from where it stopped. If it keeps stopping on the same part, reinstall TakeOne Studio.'
@@ -445,6 +538,7 @@ async function installEngine(root, opts = {}) {
   E('phase', { phase: 'finalizing' });
   const chk = await runPip(['check']);
   if (!chk.ok) {
+    recordLastError(root, state, 'pip-check', chk);
     return failResult(
       'The engine\'s final self-check found a problem with its installed parts.',
       'Try the install again. If it keeps failing, reinstall TakeOne Studio.'
@@ -452,6 +546,7 @@ async function installEngine(root, opts = {}) {
   }
   const tc = await runPy(venvPython(root), ['-c', `import torch; assert torch.version.cuda == '${REQUIRED_TORCH_CUDA}', torch.version.cuda`]);
   if (!tc.ok) {
+    recordLastError(root, state, 'torch-cuda-check', tc);
     return failResult(
       'The engine installed, but its graphics support did not pass the final check.',
       'Update your NVIDIA driver and try again. If it keeps failing, reinstall TakeOne Studio.'
@@ -578,10 +673,13 @@ async function installTool(root, toolId, opts = {}) {
 
 module.exports = {
   // paths
-  engineRoot, engineStatePath, venvDir, wheelhouseDir, comfyDir, modelPathsFile,
+  engineRoot, defaultEngineRoot, localAppDataEngineRoot,
+  engineStatePath, venvDir, wheelhouseDir, comfyDir, modelPathsFile,
   shippedPythonExe, venvPython, lockPath, guardedDest,
   // state
   readEngineState, writeEngineState, freshState,
+  // WO-36: failure evidence
+  recordLastError, tailLines, engineLog,
   // manifest
   planEngineInstall, loadLock,
   // checks

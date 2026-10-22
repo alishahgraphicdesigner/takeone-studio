@@ -1,0 +1,54 @@
+name: build-installer
+# WO-31/WO-33: release-candidate installer artifact (NOT a release).
+# Runs only manually (workflow_dispatch). WO-33: artifact name
+# "TakeOne-Studio-<version>-run<N>" + SHA256.txt, both built in CI.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      # WO-34: a version maps to exactly one commit — rebuilding the same
+      # version from different code fails the build.
+      - name: Version uniqueness check (WO-34)
+        run: node tools/check-version-unique.js
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Read app version
+        run: |
+          $v = (Get-Content package.json | ConvertFrom-Json).version
+          echo "APP_VERSION=$v" >> $env:GITHUB_ENV
+          Write-Host "APP_VERSION=$v"
+
+      - name: Build installer (electron-builder NSIS)
+        # Release candidate only: build the .exe, do NOT publish a GitHub release.
+        run: node build/dist.js --publish never
+
+      - name: SHA256 of the installer (WO-33)
+        run: |
+          $exe = Get-ChildItem dist/TakeOne-Studio-*-setup.exe | Select-Object -First 1
+          if (-not $exe) { Write-Error "installer .exe not found in dist/"; exit 1 }
+          $hash = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($exe.Name)" | Out-File -FilePath dist/SHA256.txt -Encoding ascii
+          Get-Content dist/SHA256.txt
+
+      - name: Upload installer artifact (WO-33)
+        uses: actions/upload-artifact@v4
+        with:
+          name: TakeOne-Studio-${{ env.APP_VERSION }}-run${{ github.run_number }}
+          path: |
+            dist/TakeOne-Studio-*-setup.exe
+            dist/SHA256.txt
+          if-no-files-found: error

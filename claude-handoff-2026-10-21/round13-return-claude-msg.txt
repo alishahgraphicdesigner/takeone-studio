@@ -1,0 +1,19 @@
+Round 13 return — WO-34, WO-35
+
+I decide no pass/fail — only raw evidence. Full files + raw logs in the attached zip. NOTE.md is 68 lines.
+
+WO-34: Implemented + Tested. package.json 2.2.10 → 2.2.11. docs/VERSIONS.md (new): one line per build — version, commit, exe sha256, CI run. Both 2.2.10 builds recorded with CI-computed hashes, never by hand: 2.2.10 @ 35db3825b42e6718b1be6610a8725b6fdedb05c9 → ae536efc35dd49a1c44dcaab6295c844ef471b78c9a3df81e0eb2fb7c184a6dc (run 39710499911, round 11 — a temporary CI workflow downloaded the artifact and hashed it in CI, then deleted); 2.2.10 @ c2104927cc137567fcfc7c625eaa967716cb16f5 → a520273d345f63d3cacd38cc4276f2daf9fdd7e043bd692ca2c9d94b13cca3f6 (run 39739633597, round 12 — from the CI-built SHA256.txt); 2.2.11 @ 48ab2fd0e0ba3eb15b974aeebf4ec0bdfe036991 → 8580b22bec27ad39af24372b2e0100cb646123513c1d310c45f30d192a8503a3 (run 39742914169 — artifact "TakeOne-Studio-2.2.11-run4", 120,831,113 bytes). Uniqueness enforced: tools/check-version-unique.js exits 1 if package.json's version already exists in VERSIONS.md with a different commit sha — wired as the first step of build-installer.yml, so CI fails the build. Tests: test/version-unique.test.js 3/3 (new version passes, same sha passes, different sha fails with "Bump the version"). Also: my first VERSIONS.md draft had a hand-typed (wrong) sha for 48ab2fd — caught and corrected to the real git rev-parse value before committing.
+
+WO-35: Implemented + Tested. nvidia-smi is now async (promisified execFile) with a hard 5 s timeout via Promise.race — not just execFile's own timeout option, so it holds even if the exec implementation hangs. buildDiagnosticsReport is async; the takeone:diagnostics IPC handler awaits it. The UI thread can never block on a missing/hung nvidia-smi. Tests: "missing nvidia-smi" (rejects at once → report fast, 'no NVIDIA GPU detected'), "hung nvidia-smi" (fake hangs forever → report still arrives in ~5 s AND a 100 ms timer fires promptly, proving the event loop was never blocked), "working nvidia-smi" (name + driver parsed). 13/13 diagnostics tests pass. Full suite 150/150 green locally. CI: verify 39743297684 SUCCESS, catalog-gate 39743297689 SUCCESS.
+
+Decisions I made (your review): (1) The temp hash-artifact workflow was deleted after one use — single-purpose machinery, lean rule. (2) The 2.2.11 .exe is NOT in this zip (WO-33's "full file" requirement was fulfilled for 2.2.10 in round 12; WO-34 only asks for the named artifact + VERSIONS.md); artifact "TakeOne-Studio-2.2.11-run4" is downloadable from CI run 39742914169. (3) Uniqueness check lives in build-installer.yml, not verify.yml — it guards builds, and VERSIONS.md is the builds ledger.
+
+Did NOT do: tools/audit-catalog.js untouched; no GitHub release; no version beyond 2.2.11.
+
+Fingerprint (HEAD 5ea1810b72b73ec10b4ce52180e33193658d1dc2, CI Evidence step, verify 39743297684):
+392807f18ceedea24251a6b536ffc7c637362fb0c90c00f4bbffa71f00bdd290  main/diagnostics.js
+70873f9f0cbf08b4ccf16e63d3d8a64ec457fd37fa7c5acc5242c0c7e9ce81dc  tools/check-version-unique.js
+4231795f3caafd847fb2c09995ab11c712168e8fe33da1849c02297bfc04b611  .github/workflows/build-installer.yml
+691ba65e33459f2034d42332ed299d97c29136bc033a4131a62d614338f3dde3  package.json
+
+Awaiting your verdict / next work orders.

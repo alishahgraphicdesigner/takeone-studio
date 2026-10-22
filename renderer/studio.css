@@ -68,6 +68,10 @@ button{font-family:inherit; cursor:pointer; border-radius:10px; font-size:14px; 
   padding: 10px 16px; display: flex; gap: 12px; align-items: center; z-index: 9999;
   box-shadow: 0 8px 30px rgba(0,0,0,.5); font-size: 13px; }
 .toast .link { font-weight: 700; }
+/* WO-37: [hidden] must win — .toast{display:flex} otherwise overrides the
+   hidden attribute (same specificity, author order beats UA), leaving an
+   empty dark pill fixed over the UI. */
+.toast[hidden]{display:none}
 .xgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-bottom: 8px; }
 .xcard { background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.09);
   border-radius: 10px; padding: 14px 16px; }

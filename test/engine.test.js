@@ -357,3 +357,102 @@ describe('installTool (amendment 6)', () => {
     assert.ok(steps[0].includes('already installed'));
   });
 });
+
+/* WO-36: venv failure evidence + retry + LOCALAPPDATA fallback. */
+describe('WO-36 venv failure handling', () => {
+  const VENV_ERR = 'Error: [WinError 5] Access is denied: fake-venv-stderr-line';
+  let oldLad;
+  beforeEach(() => { oldLad = process.env.LOCALAPPDATA; });
+  afterEach(() => {
+    if (oldLad === undefined) delete process.env.LOCALAPPDATA;
+    else process.env.LOCALAPPDATA = oldLad;
+  });
+
+  function ladRoot() {
+    const lad = fs.mkdtempSync(path.join(os.tmpdir(), 'takeone-lad-'));
+    process.env.LOCALAPPDATA = lad;
+    return lad;
+  }
+
+  it('first fail + fallback pass -> engineRoot override is used', async () => {
+    fakeShippedPython(ROOT);
+    const lad = ladRoot();
+    const calls = [];
+    const runPython = async (exe, args) => {
+      calls.push(args.join(' '));
+      if (String(args[0]) === '-c') return { ok: true, code: 0, out: '3.11.17\n', err: '' };
+      // Fail for the default venv location (both the first attempt and the
+      // 2 s retry); succeed once the target moves under LOCALAPPDATA.
+      const target = args[args.length - 1] || '';
+      if (target.startsWith(lad)) return { ok: true, code: 0, out: '', err: '' };
+      return { ok: false, code: 1, out: '', err: VENV_ERR };
+    };
+    const { deps } = baseDeps({ runPython });
+    const r = await engine.installEngine(ROOT, { deps, skipGpuCheck: true });
+    assert.equal(r.ok, true, 'install should succeed via the fallback');
+    const st = engine.readEngineState(ROOT);
+    assert.ok(st.engineRootOverride, 'override must be recorded in state');
+    assert.ok(st.engineRootOverride.startsWith(lad), st.engineRootOverride);
+    assert.equal(engine.engineRoot(ROOT), st.engineRootOverride,
+      'engineRoot() must resolve the override on future runs');
+    assert.ok(calls.length >= 3, `expected >=3 venv attempts, got ${calls.length}`);
+  });
+
+  it('both fail -> lastError carries step, code and stderr tail', async () => {
+    fakeShippedPython(ROOT);
+    ladRoot();
+    const runPython = async (exe, args) => {
+      if (String(args[0]) === '-c') return { ok: true, code: 0, out: '3.11.17\n', err: '' };
+      return { ok: false, code: 1, out: 'some stdout', err: VENV_ERR };
+    };
+    const { deps } = baseDeps({ runPython });
+    const r = await engine.installEngine(ROOT, { deps, skipGpuCheck: true });
+    assert.equal(r.ok, false);
+    assert.match(r.why, /Python workspace/, 'UI message stays in plain words');
+    const st = engine.readEngineState(ROOT);
+    assert.ok(st.lastError, 'lastError must be recorded');
+    assert.match(st.lastError.step, /venv/, st.lastError.step);
+    assert.equal(st.lastError.code, 1);
+    assert.ok(st.lastError.tail.includes('Access is denied'), st.lastError.tail);
+    assert.ok(st.lastError.at, 'timestamp present');
+  });
+
+  it('pip failure records lastError with the wheel name', async () => {
+    fakeShippedPython(ROOT);
+    fakeVenvPresent(ROOT);
+    const pip = pipRecorder();
+    const badPip = async (args) => {
+      if (args[0] === 'install') return { ok: false, code: 1, out: '', err: 'pip blew up: fake' };
+      return pip.runPip(args);
+    };
+    const { deps } = baseDeps({ runPip: badPip });
+    const r = await engine.installEngine(ROOT, { deps, skipGpuCheck: true });
+    assert.equal(r.ok, false);
+    const st = engine.readEngineState(ROOT);
+    assert.ok(st.lastError.step.startsWith('pip-install:'), st.lastError.step);
+    assert.ok(st.lastError.tail.includes('pip blew up'));
+  });
+
+  it('space in path: venv retry + diagnostics sections work', async () => {
+    const spaced = ROOT + ' with space';
+    fs.mkdirSync(spaced, { recursive: true });
+    try {
+      fakeShippedPython(spaced);
+      const { deps } = baseDeps();
+      const r = await engine.installEngine(spaced, { deps, skipGpuCheck: true });
+      assert.equal(r.ok, true);
+      const diag = require('../main/diagnostics.js');
+      const sec = await diag.engineSection(spaced, {
+        security: { controlledFolderAccess: 'unknown', defenderRealTime: 'unknown' },
+        shippedPythonVer: '3.11.17',
+      });
+      assert.ok(sec.includes('Root:'), sec);
+      assert.ok(sec.includes('Shipped python:'), sec);
+      assert.ok(sec.includes('Engine venv:'), sec);
+      assert.ok(sec.includes('Controlled Folder Access:'), sec);
+      assert.ok(sec.includes('Last error:'), sec);
+    } finally {
+      fs.rmSync(spaced, { recursive: true, force: true });
+    }
+  });
+});

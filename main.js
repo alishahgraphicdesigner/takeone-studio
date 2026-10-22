@@ -1,7 +1,18 @@
 // TAKEONE STARTUP LOG — absolute first, before any require
 try {
   const _lp = require('path').join(require('os').tmpdir(), 'takeone-startup.log');
-  const _lm = (m) => { try { require('fs').appendFileSync(_lp, new Date().toISOString() + ' ' + m + '\n'); } catch {} };
+  // WO-36: rotate at 512 KB so the log never grows unbounded; a fresh
+  // TOP-OF-FILE marker starts every session (diagnostics shows the current
+  // session only).
+  const _lrot = () => {
+    try {
+      const st = require('fs').statSync(_lp);
+      if (st.size > 512 * 1024) {
+        require('fs').renameSync(_lp, _lp + '.1');
+      }
+    } catch { /* first write */ }
+  };
+  const _lm = (m) => { try { _lrot(); require('fs').appendFileSync(_lp, new Date().toISOString() + ' ' + m + '\n'); } catch {} };
   _lm('TOP-OF-FILE');
   process.on('uncaughtException', (e) => { _lm('UNCAUGHT: ' + (e.stack || e.message || e)); });
   process.on('unhandledRejection', (e) => { _lm('UNHANDLED: ' + (e && e.stack || e)); });
@@ -1540,7 +1551,11 @@ if (isElectron) {
   // Startup debug log — write to temp so we can see crash point
   try {
     const logPath = require('path').join(require('os').tmpdir(), 'takeone-startup.log');
-    const log = (m) => { try { require('fs').appendFileSync(logPath, new Date().toISOString() + ' ' + m + '\n'); } catch {} };
+    // WO-36: rotate at 512 KB (same as the top-of-file writer).
+    const log = (m) => { try {
+      const st = require('fs').statSync(logPath);
+      if (st.size > 512 * 1024) require('fs').renameSync(logPath, logPath + '.1');
+    } catch {} try { require('fs').appendFileSync(logPath, new Date().toISOString() + ' ' + m + '\n'); } catch {} };
     log('START');
     process.on('uncaughtException', (e) => { log('UNCAUGHT: ' + (e.stack || e.message)); });
     process.on('unhandledRejection', (e) => { log('UNHANDLED: ' + (e && e.stack || e)); });
