@@ -1007,10 +1007,11 @@ function wireIPC() {
     return { ok: true, ready: engine.engineReady(r), state: engine.readEngineState(r) };
   });
   // WO-32: one-click diagnostics report (plain text, clipboard; user names masked, no secrets).
+  // WO-35: the builder is async — nvidia-smi never blocks the UI thread.
   ipcMain.handle('takeone:diagnostics', async (e, root) => {
     try {
       const r = root || defaultRoot();
-      const report = require('./main/diagnostics.js').buildDiagnosticsReport(r);
+      const report = await require('./main/diagnostics.js').buildDiagnosticsReport(r);
       return { ok: true, report };
     } catch (err) {
       return { ok: false, reason: 'Could not build the diagnostics report.' };

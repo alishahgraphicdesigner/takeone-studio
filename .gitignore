@@ -2,3 +2,7 @@ node_modules/
 dist/
 *.log
 .DS_Store
+
+# WO-34: handoff packages with the full installer exceed GitHub 100 MB limit
+claude-handoff-2026-10-21/*-return.zip
+claude-handoff-2026-10-21/*/TakeOne-Studio-*-setup.exe

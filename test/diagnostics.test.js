@@ -44,15 +44,15 @@ describe('buildDiagnosticsReport', () => {
     appLog: 'line1\nline2',
     comfyLog: 'comfy started',
   };
-  it('contains every required section', () => {
-    const r = diag.buildDiagnosticsReport('C:\\TakeOne', over);
+  it('contains every required section', async () => {
+    const r = await diag.buildDiagnosticsReport('C:\\TakeOne', over);
     for (const need of ['TakeOne Studio diagnostics', 'App version: 2.2.10', 'Windows:', 'GPU:',
       'Engine:', 'Free disk:', 'App log (last 100 lines)', 'ComfyUI log (last 100 lines)']) {
       assert.ok(r.includes(need), 'missing section: ' + need);
     }
   });
-  it('masks the user name and carries no secrets', () => {
-    const r = diag.buildDiagnosticsReport('C:\\Users\\RealName\\TakeOne', {
+  it('masks the user name and carries no secrets', async () => {
+    const r = await diag.buildDiagnosticsReport('C:\\Users\\RealName\\TakeOne', {
       ...over,
       appLog: 'opened C:\\Users\\RealName\\TakeOne\\x.png with api_key=sk-topsecret999',
       comfyLog: 'token: abcdef12345',
@@ -87,5 +87,39 @@ describe('appendComfyLog', () => {
     assert.ok(data.includes('first line') && data.includes('second line'));
     const tail = diag.tailFile(p, 100);
     assert.ok(tail.includes('second line'));
+  });
+});
+
+describe('WO-35: nvidia-smi never blocks the report', () => {
+  const base = {
+    version: '2.2.11', windows: 'w', engineSummary: 's', disk: 'd',
+    appLog: 'a', comfyLog: 'c',
+  };
+  it('missing nvidia-smi: report still arrives, fast', async () => {
+    const t0 = Date.now();
+    const r = await diag.buildDiagnosticsReport('/tmp/x', {
+      ...base,
+      gpuExec: async () => { throw new Error('spawn nvidia-smi ENOENT'); },
+    });
+    assert.ok(Date.now() - t0 < 2000, 'should not wait');
+    assert.ok(r.includes('GPU: no NVIDIA GPU detected'), r.split('\n')[4]);
+  });
+  it('hung nvidia-smi: report arrives within ~5 s, event loop stays responsive', async () => {
+    // The fake hangs forever — the 5 s Promise.race timeout must still fire.
+    const hanging = () => new Promise(() => {});
+    let loopResponsive = false;
+    const t0 = Date.now();
+    const p = diag.buildDiagnosticsReport('/tmp/x', { ...base, gpuExec: hanging });
+    // If the UI thread were blocked, this timer could not fire promptly.
+    await new Promise((res) => setTimeout(() => { loopResponsive = true; res(); }, 100));
+    assert.ok(loopResponsive, 'event loop was blocked');
+    const r = await p;
+    const dt = Date.now() - t0;
+    assert.ok(dt < 7000, `took too long: ${dt} ms`);
+    assert.ok(r.includes('GPU: no NVIDIA GPU detected'));
+  });
+  it('working nvidia-smi: name + driver parsed', async () => {
+    const r = await diag.queryGpu(async () => ({ stdout: 'NVIDIA GeForce RTX 5070 Ti, 616.92\n' }));
+    assert.equal(r, 'NVIDIA GeForce RTX 5070 Ti, driver 616.92');
   });
 });

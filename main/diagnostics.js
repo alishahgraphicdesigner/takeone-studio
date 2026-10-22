@@ -14,9 +14,12 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
 
 const LOG_TAIL_LINES = 100;
 const COMFY_LOG_MAX_BYTES = 512 * 1024; // rotate: keep the last half when exceeded
+const GPU_QUERY_TIMEOUT_MS = 5000; // WO-35: never block the UI on nvidia-smi
 
 /** Mask the user name out of paths: C:\Users\<name>\ -> C:\Users\...\ (all platforms). */
 function maskUserName(s) {
@@ -55,7 +58,30 @@ function tailFile(p, n) {
   }
 }
 
-/** Path of the persistent ComfyUI log (written by main/comfy.js). */
+/**
+ * WO-35: async nvidia-smi (promisified execFile, 5 s timeout) — the UI thread
+ * must never block on a missing or hung nvidia-smi. `runExec` is injectable for tests.
+ * The timeout is enforced with Promise.race (not just execFile's own timeout option),
+ * so it holds even if the exec implementation hangs.
+ */
+async function queryGpu(runExec) {
+  const run = runExec || promisify(execFile);
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error('nvidia-smi timed out')), GPU_QUERY_TIMEOUT_MS));
+  try {
+    const { stdout } = await Promise.race([
+      run('nvidia-smi',
+        ['--query-gpu=name,driver_version', '--format=csv,noheader'],
+        { timeout: GPU_QUERY_TIMEOUT_MS }),
+      timeout,
+    ]);
+    const line = String(stdout || '').trim().split('\n')[0] || '';
+    const [name, driver] = line.split(',').map((s) => s.trim());
+    return name ? `${name}, driver ${driver || 'unknown'}` : 'no NVIDIA GPU detected';
+  } catch {
+    return 'no NVIDIA GPU detected';
+  }
+}
 function comfyLogPath(root) {
   const engine = require('./engine.js');
   return path.join(engine.engineRoot(root), 'comfyui.log');
@@ -82,10 +108,12 @@ function appendComfyLog(root, line) {
 const fmtGB = (b) => (b / 1073741824).toFixed(1) + ' GB';
 
 /**
- * Build the full plain-text diagnostics report.
+ * Build the full plain-text diagnostics report (async — the GPU query never
+ * blocks the calling thread; see WO-35).
  * `over` lets tests inject every data source; defaults read the real machine.
+ * `over.gpuExec` injects the exec function used by queryGpu.
  */
-function buildDiagnosticsReport(root, over = {}) {
+async function buildDiagnosticsReport(root, over = {}) {
   const engine = require('./engine.js');
   const d = (k, fn) => (over[k] !== undefined ? over[k] : fn());
 
@@ -98,18 +126,8 @@ function buildDiagnosticsReport(root, over = {}) {
     try { v = typeof os.version === 'function' ? os.version() : ''; } catch {}
     return [v, `(${os.platform()} ${os.release()})`].filter(Boolean).join(' ');
   });
-  const gpu = d('gpu', () => {
-    // Synchronous nvidia-smi: the report must not hang the UI on a slow GPU query.
-    const { execFileSync } = require('child_process');
-    try {
-      const out = execFileSync('nvidia-smi', ['--query-gpu=name,driver_version', '--format=csv,noheader'], { timeout: 15000, encoding: 'utf8' });
-      const line = String(out).trim().split('\n')[0] || '';
-      const [name, driver] = line.split(',').map((s) => s.trim());
-      return name ? `${name}, driver ${driver || 'unknown'}` : 'no NVIDIA GPU detected';
-    } catch {
-      return 'no NVIDIA GPU detected';
-    }
-  });
+  // WO-35: async — a missing or hung nvidia-smi resolves within 5 s, UI never blocks.
+  const gpu = over.gpu !== undefined ? over.gpu : await queryGpu(over.gpuExec);
   const engineSummary = d('engineSummary', () => {
     let st = null;
     try { st = engine.readEngineState(root); } catch {}
@@ -152,5 +170,6 @@ function buildDiagnosticsReport(root, over = {}) {
 
 module.exports = {
   buildDiagnosticsReport, maskReport, maskUserName, scrubSecrets,
-  tailFile, comfyLogPath, appendComfyLog, LOG_TAIL_LINES,
+  tailFile, comfyLogPath, appendComfyLog, queryGpu,
+  LOG_TAIL_LINES, GPU_QUERY_TIMEOUT_MS,
 };
