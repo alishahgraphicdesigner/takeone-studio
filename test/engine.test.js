@@ -171,11 +171,14 @@ describe('cancel in every phase', () => {
     fakeShippedPython(ROOT);
     const token = engine.newCancelToken();
     const { deps } = baseDeps({
-      downloadFiles: async (files, { cancelToken }) => { cancelToken.cancelled = true; return { ok: false, cancelled: true }; },
+      downloadFiles: async (files, { cancelToken }) => { cancelToken.cancelled = true; return { ok: false, cancelled: true, freedBytes: 0.4e9 }; },
     });
     const r = await engine.installEngine(ROOT, { deps, cancelToken: token });
     assert.equal(r.ok, false);
-    assert.match(r.why, /cancelled/i);
+    assert.equal(r.cancelled, true);
+    assert.equal(r.why, 'Cancelled. 0.4 GB freed.');
+    assert.equal(r.freedBytes, 0.4e9);
+    assert.match(r.whatNext, /resumes where it stopped/);
   });
   it('cancel during installing stops after the current wheel', async () => {
     fakeShippedPython(ROOT);
@@ -186,10 +189,24 @@ describe('cancel in every phase', () => {
     deps.runPip = async (args) => { calls.push(args); n++; if (n === 3) token.cancelled = true; return { ok: true, code: 0, out: '', err: '' }; };
     const r = await engine.installEngine(ROOT, { deps, cancelToken: token });
     assert.equal(r.ok, false);
-    assert.match(r.why, /cancelled/i);
+    assert.equal(r.cancelled, true);
+    assert.match(r.why, /Cancelled\. .* GB freed/);
     assert.ok(calls.length < 86, 'stopped early');
     const st = engine.readEngineState(ROOT);
     assert.equal(st.ready, false);
+  });
+  it('cancel during verifying stops the install', async () => {
+    fakeShippedPython(ROOT);
+    const token = engine.newCancelToken();
+    const { deps } = baseDeps();
+    const r = await engine.installEngine(ROOT, {
+      deps,
+      cancelToken: token,
+      onEvent: (e) => { if (e.type === 'phase' && e.phase === 'verifying') token.cancelled = true; },
+    });
+    assert.equal(r.ok, false);
+    assert.equal(r.cancelled, true);
+    assert.match(r.why, /Cancelled\. .* GB freed/);
   });
   it('cancelEngineInstall() cancels in-flight installs', () => {
     const t = engine.newCancelToken();
@@ -262,6 +279,34 @@ describe('checkDiskSpace', () => {
     const r = engine.checkDiskSpace(fresh);
     assert.ok(r.freeBytes > 0, 'found real free space via ancestor');
     assert.ok(r.needBytes > 9e9, 'need ~= 9.7 GB x headroom');
+  });
+});
+
+describe('skipGpuCheck honours CI=true only (WO-29)', () => {
+  const realCI = process.env.CI;
+  afterEach(() => {
+    if (realCI === undefined) delete process.env.CI; else process.env.CI = realCI;
+  });
+  it('CI=true: TAKEONE_SKIP_GPU_CHECK is honoured', async () => {
+    process.env.CI = 'true';
+    fakeShippedPython(ROOT);
+    let gpuCalled = false;
+    const { deps } = baseDeps({ gpu: async () => { gpuCalled = true; return { ok: true, gpu: {} }; } });
+    const r = await engine.installEngine(ROOT, { deps, skipGpuCheck: true });
+    assert.equal(r.ok, true);
+    assert.equal(gpuCalled, false, 'gpu check skipped in CI');
+  });
+  it('CI unset: TAKEONE_SKIP_GPU_CHECK is ignored, real check runs', async () => {
+    delete process.env.CI;
+    fakeShippedPython(ROOT);
+    let gpuCalled = false;
+    const { deps } = baseDeps({
+      gpu: async () => { gpuCalled = true; return { ok: false, error: { kind: 'none', why: 'no gpu', whatNext: 'get one' } }; },
+    });
+    const r = await engine.installEngine(ROOT, { deps, skipGpuCheck: true });
+    assert.equal(gpuCalled, true, 'gpu check NOT skipped outside CI');
+    assert.equal(r.ok, false);
+    assert.equal(r.why, 'no gpu');
   });
 });
 

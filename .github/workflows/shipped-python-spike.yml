@@ -67,12 +67,14 @@ jobs:
           if (-not (Test-Path (Join-Path $comfy "main.py"))) { Write-Error "ComfyUI was not extracted by installEngine: $comfy"; exit 1 }
           if (-not (Test-Path $vpy)) { Write-Error "engine venv python missing: $vpy"; exit 1 }
           & $vpy "$comfy/main.py" --cpu --quick-test-for-ci 2>&1 | Tee-Object -FilePath comfy-boot.log
-          if ($LASTEXITCODE -ne 0) { Write-Host "RAW comfy-boot.log tail:"; Get-Content comfy-boot.log -Tail 30; Write-Error "COMFY BOOT FAILED"; exit 1 }
+          $bootCode = $LASTEXITCODE
+          Write-Host "ComfyUI boot exit code: $bootCode"
+          if ($bootCode -ne 0) { Write-Host "RAW comfy-boot.log tail:"; Get-Content comfy-boot.log -Tail 30; Write-Error "COMFY BOOT FAILED"; exit 1 }
 
       - name: Report
         if: always()
         run: |
           $vpy = Join-Path $PWD ".spike-root/.engine/venv/Scripts/python.exe"
-          if (Test-Path $vpy) { & $vpy -c "import torch; print('torch', torch.__version__, '| cuda', torch.version.cuda)" }
+          if (Test-Path $vpy) { & $vpy -c "import torch; print('cuda:', torch.version.cuda)" }
           $venvBytes = (Get-ChildItem .spike-root/.engine/venv -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
           "SHIPPED-PYTHON-SPIKE (installEngine) VENV BYTES: $venvBytes" | Out-File -Append $env:GITHUB_STEP_SUMMARY

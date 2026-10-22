@@ -981,7 +981,10 @@ function wireIPC() {
           if (!rr.ok) return { ok: false, why: rr.reason || 'Could not start the download.', whatNext: 'Check your internet connection and try again.' };
           const st = await mgr.waitFor('takeone-engine', cancelToken);
           if (st === 'cancelled' || (cancelToken && cancelToken.cancelled)) {
-            return { ok: false, cancelled: true, why: 'Install cancelled.', whatNext: 'You can start the install again any time.' };
+            // WO-29: delete the in-progress partial, keep verified files; report freed bytes.
+            let freedBytes = 0;
+            try { const c = await mgr.cancel('takeone-engine'); freedBytes = (c && c.freedBytes) || 0; } catch { /* ignore */ }
+            return { ok: false, cancelled: true, freedBytes, why: 'Install cancelled.', whatNext: 'You can start the install again any time.' };
           }
           if (st !== 'done') {
             const je = mgr.entries.get('takeone-engine');

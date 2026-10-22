@@ -1,0 +1,28 @@
+Round 10 return — WO-23 … WO-27
+
+I decide no pass/fail — only raw evidence. Full files + raw logs + screenshots in the attached zip. NOTE.md is 103 lines.
+
+WO-23: Implemented + Tested. main/engine.js (new): installEngine with phases preflight→downloading→verifying→installing→finalizing→ready, all 9 amendments: (1) per-wheel pip --no-deps --no-index --find-links --no-input --disable-pip-version-check --no-warn-script-location, bytes-weighted + i/86; (2) state {installed wheels, inProgress}, resume --force-reinstalls inProgress, end: pip check + python -c "import torch; assert torch.version.cuda=='12.8'"; (3) venv from <root>/.python, version/path change → rebuild; (4) explicit extra_model_paths.yaml per-type map; (5) preflight 9.7 GB × 1.25, wheelhouse deleted after Ready; (6) installTool = Step 1 of 2 + Step 2 of 2, one cancel token; (7) GPU failures none/old-driver/unknown in plain words + whatNext, min driver 570.65 Windows from NVIDIA CUDA 12.8 release notes Table 3 (link in code); (8) comfy.js free-port scan, --disable-api-nodes only if main.py --help lists it (logged), --listen 127.0.0.1; (9) engine-lock.json in build.files, dest path guard, atomic state write. Plus addManifestJob in downloads.js (87-file job, per-file sha256, resume-skip) and main.js IPC (takeone:engineInstall/engineCancel/engineStatus; getComfy uses the engine venv python). Tests: test/engine.test.js, 24 tests (fake pip: plan, resume skip/--force-reinstall, cancel each phase, plain-words failures, space-in-path, atomic state, GPU kinds, installTool steps). CI: verify 39596764040 SUCCESS (131/131), catalog-gate 39596764057 SUCCESS. shipped-python-spike 39595539743 SUCCESS — the REAL installEngine() on a Windows runner: 87 files via aria2, venv from shipped python, 86/86 wheels, pip check OK, torch.version.cuda=='12.8', ComfyUI extracted, wheelhouse deleted, ComfyUI --cpu boot exit 0. Raw log in zip.
+
+WO-24: Implemented + Tested + Failed (3 attempts, raw logs in zip). Patch: e2e-image.yml timeout 90, free-disk first step, TAKEONE_SKIP_GPU_CHECK=1, spatial-correlation check (0.3; measured noise ~0.0, structured ~0.93) + variance, PNG artifact. Attempt 1 (39595718362): stale API name enginePython→venvPython — fixed. Attempt 2 (39596502033): checkDiskSpace returned 0 free (statfsSync needs an existing path) — fixed by walking up to the nearest existing ancestor + unit test. Attempt 3 (39596765772): the e2e workflow never places the shipped python at <root>/.python (the spike workflow does) → "built-in Python is missing". Fix identified (copy the spike workflow's 'Place shipped Python' step into e2e-image.yml) but NOT applied — 3-attempt limit per standing orders. Raw logs for all 3 attempts in zip.
+
+WO-25: Implemented + Tested. image-lite → unavailable + unavailableUser. catalog-gate 39596764057: GATE PASS — VERIFIED 1 (image-studio) · UNAVAILABLE 20 · NOT_AUDITABLE 0. UI check: Download/Install only on image-studio's card; image-lite Coming soon with no button; no other card has any install button. ALL PASS.
+
+WO-26: Implemented + Tested. Image Studio card one-click engine+model chain (renderer/models.js + preload IPC). 7 states with screenshots in wo26/: idle (Install; "10.1 GB to download… 19 GB free"), downloading (Step 1 of 2, GB), verifying, installing (part i of 86, bytes-weighted bar), ready (auto-starts model Step 2 of 2), failed (WHY + WHAT NEXT), cancelled. wo26-ui-test.py: all 7 states asserted + audit dev-jargon regex over every state's UI text + chain hidden when engine ready. ALL PASS, 0 page errors.
+
+WO-27: Implemented + Tested. Studio flow: real ComfyUI port (was hardcoded 8188), engine-missing → plain message + "Install the engine" button, Cancel mid-generate → comfyInterrupt. main/comfy.js: interrupt() (POST /interrupt), queuePrompt returns port. main.js: comfyGenerate asserts engine first ({ok:false, engineMissing:true}), new takeone:comfyInterrupt IPC. test/studio-generate.test.js vs mock ComfyUI HTTP server: (1) success — queue→history→PNG magic bytes; (2) engine not ready — plain-words message (Models page, no jargon); (3) cancel — POST /interrupt received; (4) crash — {ok:false}, never throws. 4/4 green in CI.
+
+Decisions I made (your review): (1) TAKEONE_SKIP_GPU_CHECK=1 in CI — runners have no GPU; failure kinds unit-tested; real GPU path proven on Ali's PC. (2) Engine-cancel message keeps partials for resume (WO-10 design), so it says files are kept — not "X GB freed". (3) Idle disk note ~19 GB from the real constants (12.2 + 6.6), not the WO's ~16 GB. (4) Correlation threshold 0.3. (5) WO-27 renderer scenarios at node level (mock server 4/4) + page-error smoke, not full Playwright per scenario. (6) Cancel/idle strings in English (UI-English rule), not Roman Urdu.
+
+Did NOT do: audit-catalog.js untouched; no version bump/installer/release; WO-24's 4th fix (documented above).
+
+Fingerprint (HEAD 8651cdd616fce6ce5ca07865c19e074b81c33101, CI Evidence step, verify 39596764040):
+db823a8e5790760e0c026b0eaff659adaff531c008e35ad024597694015daa90  .github/workflows/e2e-image.yml
+a05116692866a7afa13b0d6a3e1fea77eee99e360c375ad710ebfe6f4c2be08d  .github/workflows/shipped-python-spike.yml
+fc1ab7854e8a9f8d330b9d32742d845ca3ec48a9295b6342dc201b6c9744d4d1  main/catalog.js
+cb29b56c9bacbc7f87d0c92c743dc7c4400811dd771be5d2be3c48d5794cb12e  main/comfy.js
+29f36bbed74206274f72008d154878afd2a6db029ceafede98389f4681c129c1  main/downloads.js
+d1800320ab4e879c35a65ce24c62f1f3d42f3ac0c8639c9816471f9da30c3ca8  main/engine.js
+4b4adfecf29d5987367a3f729dfab80bb302448f4321d89a062c4bdac8e4e64c  tools/e2e-image.js
+
+Awaiting your verdict / next work orders.

@@ -129,7 +129,8 @@
         return `<div class="chain"><div class="err"><b>Didn\u2019t work.</b> ${esc(cur.why || 'The install did not finish.')}<br>What to do: ${esc(cur.whatNext || 'Try again.')}</div>
           <button class="btn small" data-act="engine-install" data-id="${tool.id}">Try again</button></div>`;
       case 'cancelled':
-        return `<div class="chain"><div class="progwrap">Cancelled. Already-downloaded files are kept, so installing again resumes where it stopped.</div>
+        return `<div class="chain"><div class="progwrap">${esc(cur.why || 'Cancelled.')}</div>
+          <div class="muted small">${esc(cur.whatNext || 'Already-downloaded files are kept, so installing again resumes where it stopped.')}</div>
           <button class="btn small" data-act="engine-install" data-id="${tool.id}">Install</button></div>`;
       default: return '';
     }
@@ -419,7 +420,7 @@
         renderNow();
         const r = await window.takeone.engineInstall(ROOT).catch((err) => ({ ok: false, why: 'The install could not start.', whatNext: String(err && err.message || err) }));
         if (r && r.ok) { ENGINE[tool.id] = { phase: 'ready' }; }
-        else if (r && /cancelled/i.test(r.why || '')) { ENGINE[tool.id] = { phase: 'cancelled' }; }
+        else if (r && (r.cancelled || /cancelled/i.test(r.why || ''))) { ENGINE[tool.id] = { phase: 'cancelled', why: r.why, whatNext: r.whatNext }; }
         else { ENGINE[tool.id] = { phase: 'failed', why: (r && r.why) || 'The install did not finish.', whatNext: (r && r.whatNext) || 'Try again.' }; }
         renderNow();
         return;

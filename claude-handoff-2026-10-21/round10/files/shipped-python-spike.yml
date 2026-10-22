@@ -1,0 +1,78 @@
+name: shipped-python-spike
+# WO-19 + WO-23: the engine lock proven on the SHIPPED Python (CI, Windows) —
+# now through the REAL main/engine.js installEngine() (no UI), not inline steps.
+# resources/python-3.11.17-windows-x86_64-install_only_stripped.tar.gz is placed
+# at <root>/.python (the layout the app itself uses), then installEngine does:
+# manifest download (87 files, sha256) -> venv from the shipped python ->
+# per-wheel pip install -> pip check -> torch.version.cuda == '12.8' assert ->
+# ComfyUI extract -> wheelhouse deleted. ComfyUI boots --cpu at the end.
+# TAKEONE_SKIP_GPU_CHECK=1 because GitHub runners have no NVIDIA GPU
+# (the three GPU failure kinds are unit-tested; the real GPU path is proven
+# on the user's own PC).
+on:
+  workflow_dispatch:
+
+jobs:
+  shipped-python:
+    runs-on: windows-latest
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      - name: Smoke check — engine-lock.json ships in the app (build.files)
+        run: |
+          if (-not (Test-Path "engine-lock.json")) { Write-Error "engine-lock.json missing from repo root — it must ship in build.files."; exit 1 }
+          node -e "const l=require('./engine-lock.json'); if(l.wheels.length!==86) throw new Error('wheel count'); console.log('engine-lock.json OK:', l.wheels.length, 'wheels')"
+
+      - name: Place shipped Python at <root>/.python
+        run: |
+          $tar = "resources/python-3.11.17-windows-x86_64-install_only_stripped.tar.gz"
+          if (-not (Test-Path $tar)) { Write-Error "SHIPPED PYTHON TARBALL MISSING: $tar"; exit 1 }
+          New-Item -ItemType Directory -Force -Path .spike-root | Out-Null
+          tar -xzf $tar -C .spike-root
+          # tarball layout lesson (WO-19): real content lives under a python/ subdir
+          $inner = Get-ChildItem .spike-root -Directory | Where-Object { Test-Path (Join-Path $_.FullName "python.exe") } | Select-Object -First 1
+          if (-not $inner) {
+            Write-Host "TREE:"; Get-ChildItem .spike-root | Format-Table -AutoSize
+            Write-Error "SHIPPED PYTHON LAYOUT: python.exe not found after extract"; exit 1
+          }
+          New-Item -ItemType Directory -Force -Path .spike-root/.python | Out-Null
+          Get-ChildItem $inner.FullName | Move-Item -Destination .spike-root/.python -Force
+          & .spike-root/.python/python.exe --version
+
+      - name: Real installEngine() (no UI)
+        run: |
+          $env:TAKEONE_SPIKE_ROOT = Join-Path $PWD ".spike-root"
+          $env:TAKEONE_ARIA2 = Join-Path $PWD "resources/aria2c.exe"
+          $env:TAKEONE_SKIP_GPU_CHECK = "1"
+          if (-not (Test-Path $env:TAKEONE_ARIA2)) { Write-Error "aria2c.exe missing: $($env:TAKEONE_ARIA2)"; exit 1 }
+          node tools/spike-install-engine.js 2>&1 | Tee-Object -FilePath spike-install.log
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "RAW spike-install.log tail:"; Get-Content spike-install.log -Tail 40
+            Write-Error "INSTALLENGINE FAILED (raw log above)"
+            exit 1
+          }
+        timeout-minutes: 180
+
+      - name: ComfyUI boot (exit 0, --cpu)
+        run: |
+          $comfy = Join-Path $PWD ".spike-root/.engine/ComfyUI"
+          $vpy = Join-Path $PWD ".spike-root/.engine/venv/Scripts/python.exe"
+          if (-not (Test-Path (Join-Path $comfy "main.py"))) { Write-Error "ComfyUI was not extracted by installEngine: $comfy"; exit 1 }
+          if (-not (Test-Path $vpy)) { Write-Error "engine venv python missing: $vpy"; exit 1 }
+          & $vpy "$comfy/main.py" --cpu --quick-test-for-ci 2>&1 | Tee-Object -FilePath comfy-boot.log
+          if ($LASTEXITCODE -ne 0) { Write-Host "RAW comfy-boot.log tail:"; Get-Content comfy-boot.log -Tail 30; Write-Error "COMFY BOOT FAILED"; exit 1 }
+
+      - name: Report
+        if: always()
+        run: |
+          $vpy = Join-Path $PWD ".spike-root/.engine/venv/Scripts/python.exe"
+          if (Test-Path $vpy) { & $vpy -c "import torch; print('torch', torch.__version__, '| cuda', torch.version.cuda)" }
+          $venvBytes = (Get-ChildItem .spike-root/.engine/venv -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum
+          "SHIPPED-PYTHON-SPIKE (installEngine) VENV BYTES: $venvBytes" | Out-File -Append $env:GITHUB_STEP_SUMMARY

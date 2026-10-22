@@ -29,6 +29,25 @@ jobs:
           "FREE DISK on C: {0:N1} GB" -f ($d.Free / 1GB) | Out-File -Append $env:GITHUB_STEP_SUMMARY
           Get-PSDrive C | Format-Table -AutoSize
 
+      # WO-28 (4th attempt): installEngine needs the shipped python at <root>/.python —
+      # same step as shipped-python-spike (root-caused from attempt 3's failure).
+      - name: Place shipped Python at <root>/.python
+        run: |
+          $tar = "resources/python-3.11.17-windows-x86_64-install_only_stripped.tar.gz"
+          if (-not (Test-Path $tar)) { Write-Error "SHIPPED PYTHON TARBALL MISSING: $tar"; exit 1 }
+          $e2eRoot = Join-Path $PWD ".e2e-root"
+          New-Item -ItemType Directory -Force -Path $e2eRoot | Out-Null
+          tar -xzf $tar -C $e2eRoot
+          $inner = Get-ChildItem $e2eRoot -Directory | Where-Object { Test-Path (Join-Path $_.FullName "python.exe") } | Select-Object -First 1
+          if (-not $inner) {
+            Write-Host "TREE:"; Get-ChildItem $e2eRoot | Format-Table -AutoSize
+            Write-Error "SHIPPED PYTHON LAYOUT: python.exe not found after extract"; exit 1
+          }
+          New-Item -ItemType Directory -Force -Path (Join-Path $e2eRoot ".python") | Out-Null
+          Get-ChildItem $inner.FullName | Move-Item -Destination (Join-Path $e2eRoot ".python") -Force
+          & (Join-Path $e2eRoot ".python/python.exe") --version
+          echo "TAKEONE_E2E_ROOT=$e2eRoot" >> $env:GITHUB_ENV
+
       - name: Check WO-21 engine.js exists
         run: |
           if (-not (Test-Path "main/engine.js")) {
@@ -40,8 +59,8 @@ jobs:
       - name: Run end-to-end image generation (CPU)
         env:
           TAKEONE_SKIP_GPU_CHECK: "1"
+          TAKEONE_ARIA2: ${{ github.workspace }}/resources/aria2c.exe
         run: |
-          $env:TAKEONE_E2E_ROOT = Join-Path $PWD ".e2e-root"
           node tools/e2e-image.js 2>&1 | Tee-Object -FilePath e2e-image.log
           if ($LASTEXITCODE -ne 0) {
             Write-Host "RAW e2e-image.log tail:"; Get-Content e2e-image.log -Tail 40

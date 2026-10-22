@@ -234,6 +234,15 @@ function emit(onEvent, type, data) {
 
 function cancelled(token) { return !!(token && token.cancelled); }
 function failResult(why, whatNext) { return { ok: false, why, whatNext }; }
+const fmtGB1 = (b) => ((b || 0) / 1073741824).toFixed(1);
+/** WO-29: cancel result — in-progress partial deleted, verified wheels kept. */
+function cancelledResult(freedBytes) {
+  return {
+    ok: false, cancelled: true, freedBytes: freedBytes || 0,
+    why: `Cancelled. ${fmtGB1(freedBytes)} GB freed.`,
+    whatNext: 'Already-downloaded files are kept, so installing again resumes where it stopped.',
+  };
+}
 
 async function runPython(exe, args, opts = {}) {
   return new Promise((resolve) => {
@@ -325,14 +334,17 @@ async function installEngine(root, opts = {}) {
   // CI sets opts.skipGpuCheck (env TAKEONE_SKIP_GPU_CHECK=1) because GitHub
   // runners have no NVIDIA GPU; the three GPU failure kinds are covered by
   // unit tests, and the real GPU path is proven on the user's own PC.
-  if (opts.skipGpuCheck) {
+  // WO-29: the skip is honoured ONLY when CI=true (GitHub sets it); a local
+  // TAKEONE_SKIP_GPU_CHECK=1 is ignored so dev runs always do the real check.
+  const skipGpu = !!opts.skipGpuCheck && process.env.CI === 'true';
+  if (skipGpu) {
     E('gpu', { skipped: true, reason: 'TAKEONE_SKIP_GPU_CHECK=1 (CI has no NVIDIA GPU)' });
   } else {
     const gpu = await gpuCheck();
     if (!gpu.ok) return failResult(gpu.error.why, gpu.error.whatNext);
     E('gpu', { gpu: gpu.gpu });
   }
-  if (wasCancelled()) return failResult('Install cancelled.', 'You can start the install again any time.');
+  if (wasCancelled()) return cancelledResult(0);
 
   // ---- venv: create from the shipped python, rebuild if it changed (amendment 3)
   const shipVer = await shippedPythonVersion(root, deps.runPython && ((exe, args) => deps.runPython(exe, args)));
@@ -359,7 +371,7 @@ async function installEngine(root, opts = {}) {
     state.wheels = {}; state.inProgress = []; state.ready = false;
     writeEngineState(root, state);
   }
-  if (wasCancelled()) return failResult('Install cancelled.', 'You can start the install again any time.');
+  if (wasCancelled()) return cancelledResult(0);
 
   // ---- downloading (bytes-weighted, via the download manager's manifest job)
   E('phase', { phase: 'downloading' });
@@ -369,14 +381,16 @@ async function installEngine(root, opts = {}) {
     cancelToken: token,
   });
   if (!dl.ok) {
-    if (wasCancelled()) return failResult('Install cancelled.', 'Already-downloaded files are kept, so the next install resumes where this one stopped.');
+    // WO-29: cancel deletes the in-progress partial (the dep reports freedBytes);
+    // verified files stay for resume.
+    if (dl.cancelled || wasCancelled()) return cancelledResult(dl.freedBytes);
     return failResult(dl.why || 'Some engine files could not be downloaded.', dl.whatNext || 'Check your internet connection and try again. Downloaded files are kept.');
   }
-  if (wasCancelled()) return failResult('Install cancelled.', 'Already-downloaded files are kept, so the next install resumes where this one stopped.');
+  if (wasCancelled()) return cancelledResult(0);
 
   // ---- verifying is folded into the manifest job (size+sha256 per file, WO-19 pattern)
   E('phase', { phase: 'verifying' });
-  if (wasCancelled()) return failResult('Install cancelled.', 'You can start the install again any time.');
+  if (wasCancelled()) return cancelledResult(0);
 
   // ---- installing: per-wheel pip, bytes-weighted progress + i/N (amendment 1)
   E('phase', { phase: 'installing' });
@@ -394,7 +408,9 @@ async function installEngine(root, opts = {}) {
     if (wasCancelled()) {
       state.inProgress = wheels.slice(i).map((w) => w.file);
       writeEngineState(root, state);
-      return failResult('Install cancelled.', 'Already-installed parts are kept, so the next install resumes where this one stopped.');
+      // WO-29: nothing on disk to free mid-install (the wheel file is verified
+      // and kept for resume); the interrupted wheel is force-reinstalled next time.
+      return cancelledResult(0);
     }
     const w = wheels[i];
     if (state.wheels[w.file] && !forceReinstall.has(w.file)) {
@@ -485,7 +501,7 @@ async function defaultDownloadFiles(root, files, { onEvent, cancelToken }) {
     await mgr.waitFor(jobId, cancelToken);
     const st = mgr.jobState(jobId);
     if (st === 'cancelled' || (cancelToken && cancelToken.cancelled)) {
-      return { ok: false, cancelled: true, why: 'Install cancelled.', whatNext: 'You can start the install again any time.' };
+      return { ok: false, cancelled: true, freedBytes: 0, why: 'Install cancelled.', whatNext: 'You can start the install again any time.' };
     }
     if (st !== 'done') return { ok: false, why: 'Some engine files could not be downloaded.', whatNext: 'Check your internet connection and try again. Downloaded files are kept.' };
     return { ok: true };
@@ -549,7 +565,7 @@ async function installTool(root, toolId, opts = {}) {
   } else {
     E('toolStep', { step: 1, of: 2, label: 'AI engine already installed — skipping' });
   }
-  if (cancelled(token)) return failResult('Install cancelled.', 'You can start the install again any time.');
+  if (cancelled(token)) return cancelledResult(0);
 
   E('toolStep', { step: 2, of: 2, label: 'Downloading the model' });
   const dlTool = opts.downloadTool || (async () => ({ ok: true }));
