@@ -29,8 +29,17 @@ const CORRELATION_THRESHOLD = 0.3; // adjacent-pixel correlation; noise ~0, real
 function log(...a) { console.log('[e2e]', ...a); }
 
 function sha256File(p) {
+  // Streaming: fs.readFileSync throws ERR_FS_FILE_TOO_LARGE past 2 GiB
+  // (the SDXL checkpoint is ~6.6 GB).
   const crypto = require('crypto');
-  return crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+  const h = crypto.createHash('sha256');
+  const fd = fs.openSync(p, 'r');
+  try {
+    const buf = Buffer.alloc(64 * 1024 * 1024);
+    let n;
+    while ((n = fs.readSync(fd, buf, 0, buf.length, null)) > 0) h.update(buf.subarray(0, n));
+  } finally { fs.closeSync(fd); }
+  return h.digest('hex');
 }
 
 function fetchFile(url, dest) {

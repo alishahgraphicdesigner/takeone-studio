@@ -1,0 +1,31 @@
+name: build-installer
+# WO-31: release-candidate installer artifact (NOT a release).
+# Runs only manually (workflow_dispatch), after WO-28 proves real PNG generation.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  build-installer:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build installer (electron-builder NSIS)
+        run: node build/dist.js
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TakeOne-Studio-installer
+          path: dist/TakeOne-Studio-*-setup.exe
+          if-no-files-found: error
