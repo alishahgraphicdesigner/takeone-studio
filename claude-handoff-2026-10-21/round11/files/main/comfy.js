@@ -100,6 +100,14 @@ class ComfyManager {
     return args;
   }
 
+  /** Shared ready-signal path (stdout or stderr): poll /system_stats, then settle. */
+  _onReadySignal(done) {
+    this._waitForReady().then((ok) => {
+      if (ok) { this.ready = true; this.onEvent('ready', {}); done({ ok: true }); }
+      else done({ ok: false, error: 'ComfyUI started but API is not responding.' });
+    });
+  }
+
   _wireProc(resolve) {
       let settled = false;
       const done = (r) => { if (!settled) { settled = true; resolve(r); } };
@@ -107,18 +115,17 @@ class ComfyManager {
       this.proc.stdout.on('data', (d) => {
         const s = String(d);
         // ComfyUI prints "To see the GUI go to: http://127.0.0.1:8188" when ready
-        if (s.includes('To see the GUI') || s.includes('Starting server')) {
-          this._waitForReady().then((ok) => {
-            if (ok) { this.ready = true; this.onEvent('ready', {}); done({ ok: true }); }
-            else done({ ok: false, error: 'ComfyUI started but API is not responding.' });
-          });
-        }
+        // (usually on stderr — see below; stdout kept as a fallback).
+        if (s.includes('To see the GUI') || s.includes('Starting server')) this._onReadySignal(done);
       });
 
       this.proc.stderr.on('data', (d) => {
-        // Log but don't fail — ComfyUI is noisy on stderr
+        // Log but don't fail — ComfyUI is noisy on stderr.
+        // NOTE: ComfyUI prints its startup banner ("To see the GUI…") on STDERR,
+        // not stdout — so the ready signal is checked here too.
         const s = String(d).trim();
         if (s) this.onEvent('log', { line: s.slice(0, 200) });
+        if (s.includes('To see the GUI') || s.includes('Starting server')) this._onReadySignal(done);
       });
 
       this.proc.on('error', (e) => {
