@@ -18,6 +18,11 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
 
+      # WO-34: a version maps to exactly one commit — rebuilding the same
+      # version from different code fails the build.
+      - name: Version uniqueness check (WO-34)
+        run: node tools/check-version-unique.js
+
       - name: Install deps
         run: npm ci
 
