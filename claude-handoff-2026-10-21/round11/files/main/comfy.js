@@ -17,7 +17,7 @@ const fs = require('fs');
 const http = require('http');
 
 const COMFY_PORT = 8188;
-const START_TIMEOUT_MS = 120000; // 2 min for ComfyUI to boot (model loading)
+const START_TIMEOUT_MS = 300000; // 5 min: CPU boot on a slow CI runner (torch import alone can take minutes)
 
 class ComfyManager {
   constructor({ root, pythonExe, comfyDir, onEvent, cpu }) {
