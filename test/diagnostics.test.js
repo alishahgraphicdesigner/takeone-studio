@@ -1,5 +1,5 @@
 /* WO-32: diagnostics report — masking + structure tests. */
-const { describe, it } = require('node:test');
+const { describe, it, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
@@ -43,11 +43,14 @@ describe('buildDiagnosticsReport', () => {
     disk: '412.3 GB free',
     appLog: 'line1\nline2',
     comfyLog: 'comfy started',
+    engineSection: 'Root: x',
+    storageSection: 'Root: x\nProtected folder: no',
+    prevSession: '',
   };
   it('contains every required section', async () => {
     const r = await diag.buildDiagnosticsReport('C:\\TakeOne', over);
     for (const need of ['TakeOne Studio diagnostics', 'App version: 2.2.10', 'Windows:', 'GPU:',
-      'Engine:', 'Free disk:', 'App log (current session only, last 100 lines)', 'ComfyUI log (last 100 lines)']) {
+      'Engine:', 'Free disk:', '--- Storage ---', 'Protected folder:', 'App log (current session only, last 100 lines)', 'ComfyUI log (last 100 lines)']) {
       assert.ok(r.includes(need), 'missing section: ' + need);
     }
   });
@@ -169,5 +172,49 @@ describe('WO-36: Engine section', () => {
     assert.ok(tail.includes('new line 1'), tail);
     assert.ok(tail.includes('ENGINE: FAIL step=venv'), 'engine events included');
     fs.rmSync(p);
+  });
+});
+
+describe('WO-38: previous session crash detection', () => {
+  const p = require('path').join(require('os').tmpdir(), 'diag-prev-session-test.log');
+  afterEach(() => { try { fs.rmSync(p); } catch {} });
+  it('shows the previous session when it has no SHUTDOWN clean', () => {
+    fs.writeFileSync(p,
+      '2026-01-01 TOP-OF-FILE\n2026-01-01T10:00 old session line\n2026-01-01T10:01 LOOP-LAG 800ms\n' +
+      '2026-10-22T10:00 TOP-OF-FILE\n2026-10-22T10:01 current session\n');
+    const sec = diag.previousSessionSection(p);
+    assert.ok(sec.includes('Previous session (ended unexpectedly,'), sec);
+    assert.ok(sec.includes('LOOP-LAG 800ms'), 'last lines of the crashed session shown');
+    assert.ok(!sec.includes('current session'), 'current session not mixed in');
+  });
+  it('stays silent when the previous session shut down cleanly', () => {
+    fs.writeFileSync(p,
+      '2026-01-01 TOP-OF-FILE\n2026-01-01T10:00 fine\n2026-01-01T10:02 SHUTDOWN clean\n' +
+      '2026-10-22T10:00 TOP-OF-FILE\n2026-10-22T10:01 current\n');
+    assert.equal(diag.previousSessionSection(p), '');
+  });
+  it('stays silent with only one session', () => {
+    fs.writeFileSync(p, '2026-10-22T10:00 TOP-OF-FILE\n2026-10-22T10:01 current\n');
+    assert.equal(diag.previousSessionSection(p), '');
+  });
+});
+
+describe('WO-39: storage section', () => {
+  it('shows root, protected yes/no, CFA, defender blocks', async () => {
+    const sec = await diag.storageSection('C:\\TakeOne', {
+      protected: 'no',
+      security: { controlledFolderAccess: 'on', defenderRealTime: 'on' },
+      defenderBlocks: ['2026-10-22T12:46:00|C:\\Program Files\\TakeOne Studio\\TakeOne Studio.exe'],
+    });
+    for (const s of ['Root: C:\\TakeOne', 'Protected folder: no',
+                     'Controlled Folder Access: on',
+                     'Recently blocked by Controlled Folder Access:',
+                     'TakeOne Studio.exe']) {
+      assert.ok(sec.includes(s), `missing: ${s}\n${sec}`);
+    }
+  });
+  it('defender blocks: failure -> empty list', async () => {
+    const blocks = await diag.queryDefenderBlocks(async () => { throw new Error('no powershell'); });
+    assert.deepEqual(blocks, []);
   });
 });

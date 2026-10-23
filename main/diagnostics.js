@@ -108,6 +108,60 @@ function appendComfyLog(root, line) {
 const fmtGB = (b) => (b / 1073741824).toFixed(1) + ' GB';
 
 /**
+ * WO-39(5): last apps blocked by Controlled Folder Access, from the Windows
+ * Defender event log (event ID 1123). Best-effort: returns [] on any failure.
+ * runExec is injected for tests; production uses promisified execFile.
+ */
+async function queryDefenderBlocks(runExec) {
+  const exec = runExec || ((file, args) => new Promise((resolve) => {
+    execFile(file, args, { timeout: 5000, windowsHide: true }, (err, stdout) => {
+      resolve({ err, stdout: String(stdout || '') });
+    });
+  }));
+  try {
+    const ps = `Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Defender/Operational'; Id=1123} -MaxEvents 5 -ErrorAction SilentlyContinue | ` +
+      `ForEach-Object { $_.TimeCreated.ToString('o') + '|' + ($_.Properties[0].Value) }`;
+    const r = await Promise.race([
+      exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps]),
+      new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 5000)),
+    ]);
+    if (!r || r.timeout || r.err) return [];
+    return String(r.stdout || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(0, 5);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * WO-39(5): storage section — real root (masked later), protected yes/no,
+ * Controlled Folder Access status, recent Defender blocks.
+ */
+async function storageSection(root, over = {}) {
+  const lines = [];
+  lines.push(`Root: ${root}`);
+  let prot = over.protected;
+  if (prot === undefined) {
+    try {
+      const sr = require('./storage-root.js');
+      prot = sr.isProtectedFolder(root, null) ? 'yes' : 'no';
+    } catch { prot = 'unknown'; }
+  }
+  lines.push(`Protected folder: ${prot}`);
+  const sec = over.security || await querySecurity(over.runExec);
+  lines.push(`Controlled Folder Access: ${sec.controlledFolderAccess}`);
+  lines.push(`Defender real-time protection: ${sec.defenderRealTime}`);
+  const blocks = over.defenderBlocks !== undefined ? over.defenderBlocks
+    : await queryDefenderBlocks(over.runExec);
+  if (blocks && blocks.length) {
+    lines.push('Recently blocked by Controlled Folder Access:');
+    for (const b of blocks) lines.push('  ' + b);
+  } else {
+    lines.push('Recently blocked by Controlled Folder Access: none recorded');
+  }
+  return lines.join('\n');
+}
+
+/**
  * WO-36: Windows Security posture via PowerShell (async, 5 s timeout).
  * Returns { controlledFolderAccess, defenderRealTime } — each is
  * 'on' / 'off' / 'audit' / 'unknown' ('unknown' is an acceptable answer).
@@ -159,13 +213,40 @@ function sessionLogTail(logPath, n = LOG_TAIL_LINES) {
 }
 
 /**
+ * WO-38: previous-session crash detection. Splits the log on TOP-OF-FILE
+ * markers. If the session BEFORE the current one has no "SHUTDOWN clean"
+ * marker, it ended unexpectedly (crash / kill / "Not Responding") — show its
+ * last 100 lines under "Previous session (ended unexpectedly)".
+ * Returns '' when there is nothing to show.
+ */
+function previousSessionSection(logPath) {
+  let text = '';
+  try { text = fs.readFileSync(logPath, 'utf8'); } catch { return ''; }
+  const marker = 'TOP-OF-FILE';
+  const parts = text.split(marker);
+  // parts[0] = before the first marker (ignore); the current session is the
+  // last part; the previous session is the one before it.
+  if (parts.length < 3) return ''; // need at least: old + previous + current
+  const previous = parts[parts.length - 2];
+  if (!previous.trim()) return '';
+  if (previous.includes('SHUTDOWN clean')) return ''; // ended fine
+  const lines = previous.split(/\r?\n/);
+  if (lines.length && lines[lines.length - 1] === '') lines.pop();
+  const tail = lines.slice(-LOG_TAIL_LINES).join('\n') || '(empty)';
+  return [
+    `--- Previous session (ended unexpectedly, last ${LOG_TAIL_LINES} lines) ---`,
+    tail,
+  ].join('\n');
+}
+
+/**
  * WO-36: the Engine section of the diagnostics report.
  * `over` injects: engineState, security, shippedPythonVer.
  */
 async function engineSection(root, over = {}) {
   const engine = require('./engine.js');
   const st = over.engineState !== undefined ? over.engineState
-    : (() => { try { return engine.readEngineState(root); } catch { return null; } })();
+    : await (async () => { try { return await engine.readEngineState(root); } catch { return null; } })();
   const er = engine.engineRoot(root);
   const lines = [];
   lines.push(`Root: ${er}${st && st.engineRootOverride ? ' (override active)' : ''}`);
@@ -212,28 +293,34 @@ async function buildDiagnosticsReport(root, over = {}) {
   });
   // WO-35: async — a missing or hung nvidia-smi resolves within 5 s, UI never blocks.
   const gpu = over.gpu !== undefined ? over.gpu : await queryGpu(over.gpuExec);
-  const engineSummary = d('engineSummary', () => {
+  const engineSummary = over.engineSummary !== undefined ? over.engineSummary : await (async () => {
     let st = null;
-    try { st = engine.readEngineState(root); } catch {}
+    try { st = await engine.readEngineState(root); } catch {}
     if (!st || !st.installed) return 'not installed';
     const wheels = Array.isArray(st.wheels) ? st.wheels.length : 0;
     const py = st.python && st.python.version ? `, python ${st.python.version}` : '';
     return `installed (${wheels} wheels${py})`;
-  });
-  const disk = d('disk', () => {
+  })();
+  const disk = over.disk !== undefined ? over.disk : await (async () => {
     try {
-      const c = engine.checkDiskSpace(root);
+      const c = await engine.checkDiskSpace(root);
       return `${fmtGB(c.freeBytes)} free`;
     } catch {
       return 'unknown';
     }
-  });
+  })();
   const appLog = d('appLog', () => sessionLogTail(path.join(os.tmpdir(), 'takeone-startup.log'), LOG_TAIL_LINES));
   const comfyLog = d('comfyLog', () => tailFile(comfyLogPath(root), LOG_TAIL_LINES));
   // WO-36: Engine section — lastError, root (masked later), OneDrive, shipped
   // python, venv presence, Controlled Folder Access + Defender status.
   const engSection = over.engineSection !== undefined ? over.engineSection
     : await engineSection(root, over);
+  // WO-38: previous session crash evidence ('' when clean / absent).
+  const prevSession = over.prevSession !== undefined ? over.prevSession
+    : previousSessionSection(path.join(os.tmpdir(), 'takeone-startup.log'));
+  // WO-39(5): storage section — root, protected yes/no, CFA, Defender blocks.
+  const storSection = over.storageSection !== undefined ? over.storageSection
+    : await storageSection(root, over);
 
   const report = [
     'TakeOne Studio diagnostics',
@@ -247,12 +334,16 @@ async function buildDiagnosticsReport(root, over = {}) {
     '--- Engine ---',
     engSection,
     '',
+    '--- Storage ---',
+    storSection,
+    '',
     `--- App log (current session only, last ${LOG_TAIL_LINES} lines) ---`,
     appLog,
     '',
     `--- ComfyUI log (last ${LOG_TAIL_LINES} lines) ---`,
     comfyLog,
     '',
+    prevSession ? prevSession + '\n' : '',
     '(user names in paths are masked; no passwords or keys are included)',
   ].join('\n');
 
@@ -261,7 +352,7 @@ async function buildDiagnosticsReport(root, over = {}) {
 
 module.exports = {
   buildDiagnosticsReport, maskReport, maskUserName, scrubSecrets,
-  tailFile, sessionLogTail, comfyLogPath, appendComfyLog, queryGpu,
-  querySecurity, isOneDrivePath, engineSection,
+  tailFile, sessionLogTail, previousSessionSection, comfyLogPath, appendComfyLog, queryGpu,
+  querySecurity, queryDefenderBlocks, isOneDrivePath, engineSection, storageSection,
   LOG_TAIL_LINES, GPU_QUERY_TIMEOUT_MS,
 };

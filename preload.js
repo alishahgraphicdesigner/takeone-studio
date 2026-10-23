@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('takeone', {
   validateRoot: (dir) => ipcRenderer.invoke('takeone:validateRoot', dir),
   relaunch: () => ipcRenderer.invoke('takeone:relaunch'),
   getConfig: (root) => ipcRenderer.invoke('takeone:getConfig', root),
+  rootNotice: () => ipcRenderer.invoke('takeone:rootNotice'),
   saveWizard: (payload) => ipcRenderer.invoke('takeone:saveWizard', payload),
   finishWizard: (payload) => ipcRenderer.invoke('takeone:finishWizard', payload),
   folderSizes: (root) => ipcRenderer.invoke('takeone:folderSizes', root),

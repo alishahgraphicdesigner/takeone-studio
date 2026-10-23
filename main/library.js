@@ -199,6 +199,29 @@ async function uniqueName(dir, wanted) {
 /** Import a file into a project's asset dir.
  *  Duplicate guard: identical SHA-256 anywhere in this project -> no copy,
  *  returns { ok:false, duplicate:true, existing }. */
+/** WO-39(4): a blocked save must be a plain-words message, never a crash.
+ *  Wraps a save fn: EPERM/EACCES/EBUSY -> { ok:false, blocked:true, ... }. */
+function guardBlocked(fn) {
+  return async (...args) => {
+    try {
+      return await fn(...args);
+    } catch (err) {
+      const code = String((err && err.code) || '').toUpperCase();
+      if (['EPERM', 'EACCES', 'EBUSY'].includes(code)) {
+        return {
+          ok: false,
+          blocked: true,
+          reason: 'Windows Security is blocking TakeOne from saving files here.',
+          whatNext: 'Open Windows Security > Virus & threat protection > Ransomware protection ' +
+            'and add TakeOne Studio to the allowed apps, or move your library to a folder ' +
+            "Windows doesn't restrict (Settings > Library location). Nothing was lost.",
+        };
+      }
+      throw err;
+    }
+  };
+}
+
 async function importAsset(root, projectId, srcPath, opts = {}) {
   const doc = await readProjectDoc(root, projectId);
   if (!doc) return { ok: false, reason: 'Project not found.' };
@@ -419,17 +442,18 @@ async function purgeExpiredTrash(root) {
 
 module.exports = {
   TRASH_DAYS,
+  guardBlocked,
   ASSET_DIRS,
   makeProjectId,
   validateProjectName,
   defaultProjectDoc,
-  createProject,
-  renameProject,
+  createProject: guardBlocked(createProject),
+  renameProject: guardBlocked(renameProject),
   listProjects,
   countAssets,
   sha256File,
   guessAssetType,
-  importAsset,
+  importAsset: guardBlocked(importAsset),
   listAssets,
   deleteAsset,
   trashProject,

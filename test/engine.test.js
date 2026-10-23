@@ -55,8 +55,8 @@ function baseDeps(over = {}) {
 }
 
 describe('planEngineInstall', () => {
-  it('plans 87 files (86 wheels + ComfyUI zip) with sha256 on every file', () => {
-    const plan = engine.planEngineInstall(ROOT);
+  it('plans 87 files (86 wheels + ComfyUI zip) with sha256 on every file', async () => {
+    const plan = await engine.planEngineInstall(ROOT);
     assert.equal(plan.files.length, 87);
     assert.equal(plan.wheelCount, 86);
     for (const f of plan.files) {
@@ -64,31 +64,31 @@ describe('planEngineInstall', () => {
     }
     assert.ok(plan.totalBytes > 3e9);
   });
-  it('keeps every dest inside the engine root (path guard)', () => {
-    const plan = engine.planEngineInstall(ROOT);
+  it('keeps every dest inside the engine root (path guard)', async () => {
+    const plan = await engine.planEngineInstall(ROOT);
     const er = path.resolve(engine.engineRoot(ROOT));
     for (const f of plan.files) {
       const d = path.resolve(f.dest);
       assert.ok(d === er || d.startsWith(er + path.sep), f.dest);
     }
   });
-  it('guardedDest blocks ../ escapes', () => {
+  it('guardedDest blocks ../ escapes', async () => {
     assert.throws(() => engine.guardedDest(ROOT, '../evil.txt'), /Blocked unsafe/);
     assert.throws(() => engine.guardedDest(ROOT, 'wheelhouse/../../evil.txt'), /Blocked unsafe/);
   });
-  it('works with a space in the root path', () => {
+  it('works with a space in the root path', async () => {
     const spaced = path.join(ROOT, 'my dir with spaces');
     fs.mkdirSync(spaced, { recursive: true });
-    const plan = engine.planEngineInstall(spaced);
+    const plan = await engine.planEngineInstall(spaced);
     assert.equal(plan.files.length, 87);
     assert.ok(plan.files[0].dest.includes('my dir with spaces'));
-    engine.writeEngineState(spaced, engine.freshState());
-    assert.ok(engine.readEngineState(spaced));
+    await engine.writeEngineState(spaced, engine.freshState());
+    assert.ok(await engine.readEngineState(spaced));
   });
 });
 
 describe('pip flags (amendment 1)', () => {
-  it('uses the exact locked-down flag set', () => {
+  it('uses the exact locked-down flag set', async () => {
     assert.deepEqual(engine.PIP_INSTALL_FLAGS, [
       '--no-deps', '--no-index', '--no-input',
       '--disable-pip-version-check', '--no-warn-script-location',
@@ -118,7 +118,7 @@ describe('installEngine happy path', () => {
     });
     assert.equal(r.ok, true);
     assert.deepEqual(phases, ['preflight', 'venv', 'downloading', 'verifying', 'installing', 'finalizing', 'ready']);
-    const st = engine.readEngineState(ROOT);
+    const st = await engine.readEngineState(ROOT);
     assert.equal(st.ready, true);
     assert.equal(Object.keys(st.wheels).length, 86);
     assert.ok(!fs.existsSync(engine.wheelhouseDir(ROOT)), 'wheelhouse deleted after Ready');
@@ -145,14 +145,14 @@ describe('resume (amendment 2)', () => {
   it('skips installed wheels, --force-reinstalls in-progress ones', async () => {
     fakeShippedPython(ROOT);
     fakeVenvPresent(ROOT);
-    const plan = engine.planEngineInstall(ROOT);
+    const plan = await engine.planEngineInstall(ROOT);
     const wheels = plan.files.filter((f) => f.file.endsWith('.whl'));
     const st = engine.freshState();
     st.python = { version: '3.11.17', exe: engine.shippedPythonExe(ROOT), venv: engine.venvDir(ROOT) };
     // pretend first 3 wheels installed, 4th was in progress
     for (let i = 0; i < 3; i++) st.wheels[wheels[i].file] = { bytes: wheels[i].bytes };
     st.inProgress = [wheels[3].file];
-    engine.writeEngineState(ROOT, st);
+    await engine.writeEngineState(ROOT, st);
 
     const { deps, pip } = baseDeps();
     const r = await engine.installEngine(ROOT, { deps });
@@ -192,7 +192,7 @@ describe('cancel in every phase', () => {
     assert.equal(r.cancelled, true);
     assert.match(r.why, /Cancelled\. .* GB freed/);
     assert.ok(calls.length < 86, 'stopped early');
-    const st = engine.readEngineState(ROOT);
+    const st = await engine.readEngineState(ROOT);
     assert.equal(st.ready, false);
   });
   it('cancel during verifying stops the install', async () => {
@@ -208,7 +208,7 @@ describe('cancel in every phase', () => {
     assert.equal(r.cancelled, true);
     assert.match(r.why, /Cancelled\. .* GB freed/);
   });
-  it('cancelEngineInstall() cancels in-flight installs', () => {
+  it('cancelEngineInstall() cancels in-flight installs', async () => {
     const t = engine.newCancelToken();
     engine.cancelEngineInstall();
     assert.equal(t.cancelled, true);
@@ -274,9 +274,9 @@ describe('checkGpu (amendment 7)', () => {
 });
 
 describe('checkDiskSpace', () => {
-  it('walks up to the nearest existing ancestor on a fresh root', () => {
+  it('walks up to the nearest existing ancestor on a fresh root', async () => {
     const fresh = path.join(ROOT, 'no-such-dir', 'deeper');
-    const r = engine.checkDiskSpace(fresh);
+    const r = await engine.checkDiskSpace(fresh);
     assert.ok(r.freeBytes > 0, 'found real free space via ancestor');
     assert.ok(r.needBytes > 9e9, 'need ~= 9.7 GB x headroom');
   });
@@ -311,15 +311,15 @@ describe('skipGpuCheck honours CI=true only (WO-29)', () => {
 });
 
 describe('state file', () => {
-  it('writes atomically — no .tmp leftovers, always parseable', () => {
-    engine.writeEngineState(ROOT, { ...engine.freshState(), ready: true });
+  it('writes atomically — no .tmp leftovers, always parseable', async () => {
+    await engine.writeEngineState(ROOT, { ...engine.freshState(), ready: true });
     const dir = engine.engineRoot(ROOT);
     const leftovers = fs.readdirSync(dir).filter((f) => f.includes('.tmp'));
     assert.deepEqual(leftovers, []);
-    assert.equal(engine.readEngineState(ROOT).ready, true);
+    assert.equal((await engine.readEngineState(ROOT)).ready, true);
   });
-  it('readEngineState returns null when missing', () => {
-    assert.equal(engine.readEngineState(ROOT), null);
+  it('readEngineState returns null when missing', async () => {
+    assert.equal(await engine.readEngineState(ROOT), null);
   });
 });
 
@@ -390,7 +390,7 @@ describe('WO-36 venv failure handling', () => {
     const { deps } = baseDeps({ runPython });
     const r = await engine.installEngine(ROOT, { deps, skipGpuCheck: true });
     assert.equal(r.ok, true, 'install should succeed via the fallback');
-    const st = engine.readEngineState(ROOT);
+    const st = await engine.readEngineState(ROOT);
     assert.ok(st.engineRootOverride, 'override must be recorded in state');
     assert.ok(st.engineRootOverride.startsWith(lad), st.engineRootOverride);
     assert.equal(engine.engineRoot(ROOT), st.engineRootOverride,
@@ -409,7 +409,7 @@ describe('WO-36 venv failure handling', () => {
     const r = await engine.installEngine(ROOT, { deps, skipGpuCheck: true });
     assert.equal(r.ok, false);
     assert.match(r.why, /Python workspace/, 'UI message stays in plain words');
-    const st = engine.readEngineState(ROOT);
+    const st = await engine.readEngineState(ROOT);
     assert.ok(st.lastError, 'lastError must be recorded');
     assert.match(st.lastError.step, /venv/, st.lastError.step);
     assert.equal(st.lastError.code, 1);
@@ -428,7 +428,7 @@ describe('WO-36 venv failure handling', () => {
     const { deps } = baseDeps({ runPip: badPip });
     const r = await engine.installEngine(ROOT, { deps, skipGpuCheck: true });
     assert.equal(r.ok, false);
-    const st = engine.readEngineState(ROOT);
+    const st = await engine.readEngineState(ROOT);
     assert.ok(st.lastError.step.startsWith('pip-install:'), st.lastError.step);
     assert.ok(st.lastError.tail.includes('pip blew up'));
   });
@@ -454,5 +454,63 @@ describe('WO-36 venv failure handling', () => {
     } finally {
       fs.rmSync(spaced, { recursive: true, force: true });
     }
+  });
+});
+
+/* WO-38(3): the event loop must stay responsive during engine file ops. */
+describe('WO-38 event-loop responsiveness', () => {
+  it('slow rm (3 s) does not block a 100 ms timer', async () => {
+    fakeShippedPython(ROOT);
+    const fsMod = require('fs');
+    const realRm = fsMod.promises.rm;
+    let slowRms = 0;
+    // Fake a 3 s delete (the old venv is ~5.6 GB; wheelhouse ~3.5 GB).
+    fsMod.promises.rm = async (...a) => { slowRms++; await new Promise((r) => setTimeout(r, 3000)); return realRm(...a); };
+    let ticks = 0;
+    const timer = setInterval(() => { ticks++; }, 100);
+    try {
+      const { deps } = baseDeps();
+      const t0 = Date.now();
+      const r = await engine.installEngine(ROOT, { deps, skipGpuCheck: true });
+      const elapsed = Date.now() - t0;
+      assert.equal(r.ok, true);
+      assert.ok(slowRms >= 2, `expected slow rm to run (venv + wheelhouse), got ${slowRms}`);
+      // A 100 ms timer over >=6 s of slow deletes must fire dozens of times.
+      // If the loop were blocked, ticks would be ~0.
+      assert.ok(ticks >= 20, `timer kept firing during slow deletes: ${ticks} ticks in ${elapsed} ms`);
+    } finally {
+      clearInterval(timer);
+      fsMod.promises.rm = realRm;
+    }
+  });
+
+  it('event-loop lag is reported with the current operation', async () => {
+    const lm = require('../main/loop-monitor.js');
+    const lags = [];
+    const stop = lm.startLoopMonitor((info) => lags.push(info), { lagThresholdMs: 1, pollMs: 50 });
+    // Block the loop briefly to force a lag sample.
+    const t0 = Date.now();
+    lm.setCurrentOp('engine-phase:venv');
+    while (Date.now() - t0 < 120) { /* busy */ }
+    await new Promise((r) => setTimeout(r, 200));
+    lm.clearCurrentOp();
+    stop();
+    assert.ok(lags.length > 0, 'lag samples were reported');
+    assert.ok(lags.some((l) => l.op === 'engine-phase:venv'), JSON.stringify(lags[0]));
+  });
+
+  it('slow IPC handler (>200 ms) is reported', async () => {
+    const lm = require('../main/loop-monitor.js');
+    const slows = [];
+    const wrapped = lm.wrapIpcHandler('takeone:test', async () => {
+      await new Promise((r) => setTimeout(r, 250));
+      return 'ok';
+    }, (info) => slows.push(info));
+    const r = await wrapped();
+    assert.equal(r, 'ok');
+    assert.equal(slows.length, 1);
+    assert.equal(slows[0].name, 'takeone:test');
+    assert.ok(slows[0].durationMs >= 200);
+    assert.equal(lm.currentOp(), null, 'op cleared after handler');
   });
 });

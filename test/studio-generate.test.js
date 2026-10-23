@@ -96,10 +96,10 @@ describe('WO-27: Studio generate flow vs mock ComfyUI', () => {
     assert.ok(png.length > 50, 'non-trivial PNG body');
   });
 
-  it('engine not ready: assertEngineReady throws a plain-words message', () => {
+  it('engine not ready: assertEngineReady throws a plain-words message', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'takeone-noengine-'));
     try {
-      assert.throws(() => engine.assertEngineReady(root), (err) => {
+      await assert.rejects(() => engine.assertEngineReady(root), (err) => {
         assert.match(err.message, /Models page/);
         assert.ok(!/venv|torch|traceback|\.py\b/i.test(err.message), 'no dev jargon: ' + err.message);
         return true;

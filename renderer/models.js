@@ -107,39 +107,64 @@
     };
     switch (cur.phase) {
       case 'idle':
-        return `<div class="chain"><button class="btn small" data-act="engine-install" data-id="${tool.id}">Install</button>
+        return `<div class="chain" data-engine-card="${tool.id}"><button class="btn small" data-act="engine-install" data-id="${tool.id}">Install</button>
           <div class="muted small">One click installs everything: the AI engine (3.5 GB) and the Image Studio model (6.6 GB) — about 10.1 GB to download. Needs about 19 GB free on this drive.</div></div>`;
-      case 'preflight': case 'venv':
-        return `<div class="chain"><div class="progwrap">Step 1 of 2 — Preparing…</div>${cancelBtn}</div>`;
+      case 'preflight': case 'venv': {
+        const note = cur.cleanupNote ? `<div class="muted small">${esc(cur.cleanupNote)}</div>` : '';
+        return `<div class="chain" data-engine-card="${tool.id}"><div class="progwrap">Step 1 of 2 — Preparing…</div>${note}${cancelBtn}</div>`;
+      }
       case 'downloading': {
         const t = `<div class="progwrap">Step 1 of 2 — Downloading the engine… ${fmtGB(cur.doneBytes || 0)} of ${fmtGB(cur.totalBytes || 1)}</div>`;
-        return `<div class="chain">${t}${bar(cur.doneBytes || 0, cur.totalBytes || 1)}${cancelBtn}</div>`;
+        return `<div class="chain" data-engine-card="${tool.id}">${t}${bar(cur.doneBytes || 0, cur.totalBytes || 1)}${cancelBtn}</div>`;
       }
       case 'verifying':
-        return `<div class="chain"><div class="progwrap">Step 1 of 2 — Checking the engine files…</div>${cancelBtn}</div>`;
+        return `<div class="chain" data-engine-card="${tool.id}"><div class="progwrap">Step 1 of 2 — Checking the engine files…</div>${cancelBtn}</div>`;
       case 'installing': {
         const t = `<div class="progwrap">Step 1 of 2 — Installing… part ${cur.index || '?'} of ${cur.count || 86}</div>`;
-        return `<div class="chain">${t}${bar(cur.doneBytes || 0, cur.totalBytes || 1)}${cancelBtn}</div>`;
+        return `<div class="chain" data-engine-card="${tool.id}">${t}${bar(cur.doneBytes || 0, cur.totalBytes || 1)}${cancelBtn}</div>`;
       }
       case 'finalizing':
-        return `<div class="chain"><div class="progwrap">Step 1 of 2 — Final checks…</div>${cancelBtn}</div>`;
+        return `<div class="chain" data-engine-card="${tool.id}"><div class="progwrap">Step 1 of 2 — Final checks…</div>${cancelBtn}</div>`;
       case 'ready':
-        return `<div class="chain"><div class="progwrap">Engine ready \u2713 — Step 2 of 2: downloading the model…</div></div>`;
+        return `<div class="chain" data-engine-card="${tool.id}"><div class="progwrap">Engine ready \u2713 — Step 2 of 2: downloading the model…</div></div>`;
       case 'failed':
-        return `<div class="chain"><div class="err"><b>Didn\u2019t work.</b> ${esc(cur.why || 'The install did not finish.')}<br>What to do: ${esc(cur.whatNext || 'Try again.')}</div>
+        return `<div class="chain" data-engine-card="${tool.id}"><div class="err"><b>Didn\u2019t work.</b> ${esc(cur.why || 'The install did not finish.')}<br>What to do: ${esc(cur.whatNext || 'Try again.')}</div>
           <button class="btn small" data-act="engine-install" data-id="${tool.id}">Try again</button></div>`;
       case 'cancelled':
-        return `<div class="chain"><div class="progwrap">${esc(cur.why || 'Cancelled.')}</div>
+        return `<div class="chain" data-engine-card="${tool.id}"><div class="progwrap">${esc(cur.why || 'Cancelled.')}</div>
           <div class="muted small">${esc(cur.whatNext || 'Already-downloaded files are kept, so installing again resumes where it stopped.')}</div>
           <button class="btn small" data-act="engine-install" data-id="${tool.id}">Install</button></div>`;
       default: return '';
     }
   }
 
+  // WO-38: engine events are throttled — high-frequency progress events update
+  // ONLY that card's bar (no full re-render); structural changes re-render.
+  let _engThrottleAt = 0;
+  let _engThrottleTimer = null;
+  function updateEngineBar(toolId) {
+    const e = ENGINE[toolId];
+    if (!e) return;
+    const card = document.querySelector(`[data-engine-card="${toolId}"]`);
+    if (!card) return;
+    const total = e.totalBytes || 1, done = e.doneBytes || 0;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    const barFill = card.querySelector('.prog i');
+    if (barFill) barFill.style.width = pct + '%';
+    const bar = card.querySelector('.prog');
+    if (bar) bar.setAttribute('aria-valuenow', String(pct));
+    const wrap = card.querySelector('.progwrap');
+    if (wrap) {
+      if (e.phase === 'downloading') wrap.textContent = `Step 1 of 2 — Downloading the engine… ${fmtGB(done)} of ${fmtGB(total)}`;
+      else if (e.phase === 'installing') wrap.textContent = `Step 1 of 2 — Installing… part ${e.index || '?'} of ${e.count || 86}`;
+    }
+  }
   function handleEngineEvent(toolId, ev) {
     const e = ENGINE[toolId] || (ENGINE[toolId] = { phase: 'idle' });
+    let structural = false;
     if (ev.type === 'phase') {
       e.phase = ev.phase;
+      structural = true;
       if (ev.phase === 'ready') {
         ENGINE_READY = true;
         // Step 2 of 2: the model download goes through the normal download flow.
@@ -154,8 +179,28 @@
       e.doneBytes = ev.doneBytes; e.totalBytes = ev.totalBytes;
     } else if (ev.type === 'toolStep') {
       e.phase = ev.step === 2 ? 'ready' : e.phase;
+      structural = true;
+    } else if (ev.type === 'cleanupNote') {
+      // WO-38: "Cleaning up old files..." — show it in the chain text.
+      e.cleanupNote = ev.note;
+      structural = true;
     }
-    renderNow();
+    if (structural) {
+      renderNow();
+      return;
+    }
+    // Progress tick: update only this card's bar, at most every 250 ms.
+    const now = Date.now();
+    if (now - _engThrottleAt >= 250) {
+      _engThrottleAt = now;
+      updateEngineBar(toolId);
+    } else if (!_engThrottleTimer) {
+      _engThrottleTimer = setTimeout(() => {
+        _engThrottleTimer = null;
+        _engThrottleAt = Date.now();
+        updateEngineBar(toolId);
+      }, 250 - (now - _engThrottleAt));
+    }
   }
 
   function renderNow() {

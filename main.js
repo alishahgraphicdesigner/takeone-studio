@@ -30,6 +30,8 @@ const isElectron = !!(_electron && _electron.app);
 const app = isElectron ? _electron.app : null;
 const BrowserWindow = isElectron ? _electron.BrowserWindow : null;
 const ipcMain = isElectron ? _electron.ipcMain : null;
+// WO-38: event-loop lag monitor (pure module — safe under plain node too).
+const loopMonitor = require('./main/loop-monitor.js');
 const dialog = isElectron ? _electron.dialog : null;
 const shell = isElectron ? _electron.shell : null;
 const Menu = isElectron ? _electron.Menu : null;
@@ -226,7 +228,11 @@ module.exports = {
 // ---------------------------------------------------------------------------
 function receiptDir() { return path.join(app.getPath('appData'), APP_DIR_NAME); }
 function receiptPath() { return path.join(receiptDir(), 'receipt.json'); }
-function defaultRoot() { return path.join(app.getPath('documents'), 'TakeOne'); }
+// WO-39: default root is %LOCALAPPDATA%\TakeOne — never a Windows protected
+// folder (Documents/Pictures/Videos/Music/Desktop), so Controlled Folder
+// Access can't block the engine install.
+const storageRootMod = require('./main/storage-root.js');
+function defaultRoot() { return storageRootMod.defaultRoot(app.getPath.bind(app)); }
 function configPath(root) { return path.join(root, 'config.json'); }
 function pythonDir(root) { return path.join(root, '.python'); }
 function bundledPythonTarball() { return path.join(process.resourcesPath, 'python.tar.gz'); }
@@ -763,9 +769,71 @@ function slog(...a) {
 // ---------------------------------------------------------------------------
 async function boot() {
   try { global.__takeoneLog && global.__takeoneLog('BOOT start'); } catch {}
+  // WO-38: watch the event loop — lag > 500 ms or an IPC handler > 200 ms
+  // gets written to the app log with the current operation attached.
+  try {
+    const tlog = global.__takeoneLog || (() => {});
+    loopMonitor.startLoopMonitor(
+      (info) => tlog(`LOOP-LAG ${info.lagMs}ms op=${info.op || 'none'} at=${info.at}`));
+    const _wrap = (name, fn) => loopMonitor.wrapIpcHandler(name, fn,
+      (s) => tlog(`IPC-SLOW ${s.name} took ${s.durationMs}ms`));
+    global.__takeoneWrapIpc = _wrap;
+  } catch { /* the monitor never breaks boot */ }
   const forceWizard = process.env.TAKEONE_FORCE_WIZARD === '1';
   const receipt = await readReceipt();
   let root = (receipt && receipt.storageRoot) || defaultRoot();
+  let rootNotice = null;
+  let protectedFrom = null;
+  // WO-39: existing root inside a Windows protected folder (Documents,
+  // Pictures, Videos, Music, Desktop)? New data goes to LOCALAPPDATA.
+  // The old files are NEVER touched, moved or deleted.
+  try {
+    const getP = app.getPath.bind(app);
+    if (storageRootMod.isProtectedFolder(root, getP)) {
+      const ladRoot = storageRootMod.defaultRoot(getP);
+      if (path.resolve(ladRoot) !== path.resolve(root)) {
+        protectedFrom = root;
+        rootNotice = {
+          kind: 'protected-move',
+          from: protectedFrom, to: ladRoot,
+          text: "TakeOne now keeps its files in a folder Windows doesn't restrict. " +
+            'Your old files are still at ' + protectedFrom + ' — nothing was moved or deleted.',
+        };
+        try { global.__takeoneLog && global.__takeoneLog('WO-39 protected root moved: ' + protectedFrom + ' -> ' + ladRoot); } catch {}
+        root = ladRoot;
+        await writeReceipt({
+          storageRoot: root,
+          previousProtectedRoot: protectedFrom,
+          installedAt: (receipt && receipt.installedAt) || new Date().toISOString(),
+        });
+      }
+    }
+    // WO-39: startup test-write. If Windows Security blocks the root,
+    // say so in plain words and fall back to LOCALAPPDATA automatically.
+    const probe = await storageRootMod.probeWritable(root);
+    if (!probe.ok && storageRootMod.isBlockedBySecurity(probe.code)) {
+      const ladRoot = storageRootMod.defaultRoot(getP);
+      const msg = storageRootMod.blockedMessage(root);
+      if (path.resolve(ladRoot) !== path.resolve(root)) {
+        rootNotice = {
+          kind: 'blocked-fallback', from: root, to: ladRoot,
+          text: msg.body + " TakeOne switched to a folder Windows doesn't restrict: " + ladRoot,
+        };
+        try { global.__takeoneLog && global.__takeoneLog('WO-39 root blocked (' + probe.code + '), fallback: ' + root + ' -> ' + ladRoot); } catch {}
+        root = ladRoot;
+        await writeReceipt({
+          storageRoot: root,
+          previousProtectedRoot: protectedFrom || (receipt && receipt.storageRoot) || null,
+          installedAt: (receipt && receipt.installedAt) || new Date().toISOString(),
+        });
+      } else {
+        rootNotice = { kind: 'blocked', from: root, text: msg.body };
+      }
+    }
+  } catch (err) {
+    try { global.__takeoneLog && global.__takeoneLog('WO-39 root resolve failed: ' + String(err && err.message || err)); } catch {}
+  }
+  global.__takeoneRootNotice = rootNotice;
   // Stale install states: no pip process survives a restart, so 'installing',
   // 'queued', or 'cancelling' on boot is a lie. Reset to neutral — the user
   // can retry. Never leave the user stuck with no button to press.
@@ -826,6 +894,9 @@ function wireIPC() {
     return r.canceled ? null : r.filePaths[0];
   });
   ipcMain.handle('takeone:defaultRoot', async () => defaultRoot());
+  // WO-39: the boot-time storage notice (protected move / blocked fallback),
+  // shown once as a plain-words banner in the Studio.
+  ipcMain.handle('takeone:rootNotice', async () => global.__takeoneRootNotice || null);
   ipcMain.handle('takeone:getVersion', async () => {
     try { return require('./package.json').version; }
     catch { return 'unknown'; }
@@ -983,9 +1054,9 @@ function wireIPC() {
     const mgr = await getDLM(r);
     const res = await engine.installEngine(r, {
       cancelToken: engineToken,
-      onEvent: (ev) => {
+      onEvent: loopMonitor.trackEnginePhase((ev) => {
         if (studioWin && !studioWin.isDestroyed()) studioWin.webContents.send('engine-event', ev);
-      },
+      }),
       deps: {
         downloadFiles: async (files, { onEvent, cancelToken }) => {
           const rr = await mgr.addManifestJob({ id: 'takeone-engine', files, category: 'engine' });
@@ -1015,7 +1086,7 @@ function wireIPC() {
   });
   ipcMain.handle('takeone:engineStatus', async (e, root) => {
     const r = root || defaultRoot();
-    return { ok: true, ready: engine.engineReady(r), state: engine.readEngineState(r) };
+    return { ok: true, ready: await engine.engineReady(r), state: await engine.readEngineState(r) };
   });
   // WO-32: one-click diagnostics report (plain text, clipboard; user names masked, no secrets).
   // WO-35: the builder is async — nvidia-smi never blocks the UI thread.
@@ -1573,6 +1644,9 @@ if (isElectron) {
     let quitting = false;
     app.on('before-quit', async (e) => {
       if (quitting) return;
+      // WO-38: mark a clean shutdown so diagnostics can tell "crashed / killed"
+      // from "closed normally". This must be the last line the app writes.
+      try { global.__takeoneLog && global.__takeoneLog('SHUTDOWN clean'); } catch {}
       if (dlm) {
         quitting = true;
         e.preventDefault(); // wait for clean shutdown

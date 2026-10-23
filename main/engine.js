@@ -69,13 +69,34 @@ function localAppDataEngineRoot() {
   return path.join(lad, 'TakeOne', 'engine');
 }
 function engineRoot(root) {
+  // WO-38: sync fast-path via the in-memory override cache (populated by
+  // resolveEngineRoot on install/boot). Falls back to one tiny sync read.
+  const cached = _engineRootCache.get(path.resolve(root));
+  if (cached) return cached;
   const def = defaultEngineRoot(root);
   try {
     const st = JSON.parse(fs.readFileSync(path.join(def, STATE_FILENAME), 'utf8'));
     if (st && typeof st.engineRootOverride === 'string' && st.engineRootOverride) {
+      _engineRootCache.set(path.resolve(root), st.engineRootOverride);
       return st.engineRootOverride;
     }
   } catch { /* no state yet — default location */ }
+  return def;
+}
+/** WO-38: async override resolution — warms the engineRoot() cache so the
+ *  install path never does a sync read. */
+const _engineRootCache = new Map();
+async function resolveEngineRoot(root) {
+  const def = defaultEngineRoot(root);
+  try {
+    const raw = await fsp.readFile(path.join(def, STATE_FILENAME), 'utf8');
+    const st = JSON.parse(raw);
+    if (st && typeof st.engineRootOverride === 'string' && st.engineRootOverride) {
+      _engineRootCache.set(path.resolve(root), st.engineRootOverride);
+      return st.engineRootOverride;
+    }
+  } catch { /* no state yet */ }
+  _engineRootCache.set(path.resolve(root), def);
   return def;
 }
 function engineStatePath(root) { return path.join(engineRoot(root), STATE_FILENAME); }
@@ -117,17 +138,19 @@ function compareVersions(a, b) {
 /* ---------------------------------------------------------------- state (atomic) */
 
 /** Amendment 9: state file is always written atomically (tmp + rename) so a crash
- *  can never leave a half-written state file behind. */
-function writeEngineState(root, state) {
+ *  can never leave a half-written state file behind.
+ *  WO-38: async — state writes happen on the hot install path. */
+async function writeEngineState(root, state) {
   const dir = engineRoot(root);
-  fs.mkdirSync(dir, { recursive: true });
+  await fsp.mkdir(dir, { recursive: true });
   const tmp = path.join(dir, STATE_FILENAME + '.tmp-' + process.pid);
-  fs.writeFileSync(tmp, JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2));
-  fs.renameSync(tmp, engineStatePath(root));
+  await fsp.writeFile(tmp, JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2));
+  await fsp.rename(tmp, engineStatePath(root));
 }
 
-function readEngineState(root) {
-  try { return JSON.parse(fs.readFileSync(engineStatePath(root), 'utf8')); }
+/** WO-38: async — read on the install path. */
+async function readEngineState(root) {
+  try { return JSON.parse(await fsp.readFile(engineStatePath(root), 'utf8')); }
   catch { return null; }
 }
 
@@ -137,8 +160,9 @@ function freshState() {
 
 /* ---------------------------------------------------------------- manifest */
 
-function loadLock(lockFile) {
-  const lock = JSON.parse(fs.readFileSync(lockFile || lockPath(), 'utf8'));
+/** WO-38: async — the manifest read happens on the install path. */
+async function loadLock(lockFile) {
+  const lock = JSON.parse(await fsp.readFile(lockFile || lockPath(), 'utf8'));
   if (!Array.isArray(lock.wheels) || !lock.wheels.length) {
     throw new Error('engine-lock.json has no wheels.');
   }
@@ -158,9 +182,10 @@ function guardedDest(root, rel) {
   return dest;
 }
 
-/** Full download manifest: 86 wheels + ComfyUI zip. Pure — unit-testable. */
-function planEngineInstall(root, opts = {}) {
-  const lock = loadLock(opts.lockFile);
+/** Full download manifest: 86 wheels + ComfyUI zip. Pure — unit-testable.
+ *  WO-38: async (loadLock reads the manifest file). */
+async function planEngineInstall(root, opts = {}) {
+  const lock = await loadLock(opts.lockFile);
   const files = lock.wheels.map((w) => ({
     url: w.url,
     file: w.file,
@@ -180,17 +205,19 @@ function planEngineInstall(root, opts = {}) {
 
 /* ---------------------------------------------------------------- checks */
 
-function checkDiskSpace(root) {
+/** WO-38: async — no sync fs on the install path. */
+async function checkDiskSpace(root) {
   // statfs needs an EXISTING path — walk up to the nearest existing ancestor
   // (the engine dir itself usually doesn't exist yet on a fresh install).
+  const exists = async (p) => { try { await fsp.access(p); return true; } catch { return false; } };
   let dir = path.resolve(engineRoot(root));
-  while (!fs.existsSync(dir)) {
+  while (!(await exists(dir))) {
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
   let freeBytes = 0;
-  try { const s = fs.statfsSync(dir); freeBytes = s.bfree * s.bsize; }
+  try { const s = await fsp.statfs(dir); freeBytes = Number(s.bfree) * Number(s.bsize); }
   catch { freeBytes = 0; }
   const needBytes = Math.ceil(ESTIMATED_ENGINE_BYTES * HEADROOM_FACTOR);
   return { ok: freeBytes >= needBytes, freeBytes, needBytes };
@@ -272,12 +299,13 @@ function tailLines(text, n = 30) {
   return lines.slice(-n).join('\n');
 }
 
-/** Append to the app log (takeone-startup.log) — engine events land here. */
+/** Append to the app log (takeone-startup.log) — engine events land here.
+ *  WO-38: fire-and-forget async append; logging never blocks the event loop. */
 function engineLog(msg) {
   try {
     if (global.__takeoneLog) { global.__takeoneLog('ENGINE: ' + msg); return; }
     const lp = path.join(os.tmpdir(), 'takeone-startup.log');
-    fs.appendFileSync(lp, new Date().toISOString() + ' ENGINE: ' + msg + '\n');
+    fsp.appendFile(lp, new Date().toISOString() + ' ENGINE: ' + msg + '\n').catch(() => {});
   } catch { /* logging never breaks the install */ }
 }
 
@@ -286,7 +314,7 @@ function engineLog(msg) {
  * The UI message stays in plain words; the detail lives here + the app log,
  * and surfaces only in the diagnostics report.
  */
-function recordLastError(root, state, step, result) {
+async function recordLastError(root, state, step, result) {
   const tail = tailLines(
     [result && result.err, result && result.out].filter(Boolean).join('\n'), 30);
   state.lastError = {
@@ -295,8 +323,8 @@ function recordLastError(root, state, step, result) {
     tail: tail.slice(0, 4000), // cap: the state file must stay small
     at: new Date().toISOString(),
   };
-  engineLog(`FAIL step=${step} code=${state.lastError.code}\n${tail}`);
-  writeEngineState(root, state);
+  engineLog('FAIL step=' + step + ' code=' + state.lastError.code + '\n' + tail);
+  await writeEngineState(root, state);
   return state.lastError;
 }
 
@@ -320,14 +348,15 @@ async function runPython(exe, args, opts = {}) {
  */
 async function shippedPythonVersion(root, runExec) {
   const exe = shippedPythonExe(root);
-  if (!fs.existsSync(exe)) return null;
+  try { await fsp.access(exe); } catch { return null; }
   const r = await (runExec || runPython)(exe, ['-c', 'import sys; print(sys.version.split()[0])']);
   const v = String((r && (r.out || r.stdout)) || '').trim().split('\n')[0];
   return /^\d+\.\d+/.test(v) ? v : null;
 }
 
-/** Amendment 4: explicit model-type -> Models/<category> mapping. */
-function writeModelPaths(root) {
+/** Amendment 4: explicit model-type -> Models/<category> mapping.
+ *  WO-38: async — no sync writes on the install path. */
+async function writeModelPaths(root) {
   const er = engineRoot(root);
   const M = (c) => path.join(root, 'Models', c);
   const yml =
@@ -344,12 +373,12 @@ comfyui:
   clip: ${M('text')}
   clip_vision: ${M('analyze')}
 `;
-  fs.writeFileSync(modelPathsFile(root), yml);
+  await fsp.writeFile(modelPathsFile(root), yml);
 }
 
-function deleteWheelhouse(root) {
+async function deleteWheelhouse(root) {
   const wh = wheelhouseDir(root);
-  try { fs.rmSync(wh, { recursive: true, force: true }); } catch { /* best effort */ }
+  try { await fsp.rm(wh, { recursive: true, force: true }); } catch { /* best effort */ }
 }
 
 /**
@@ -365,8 +394,11 @@ function deleteWheelhouse(root) {
 async function installEngine(root, opts = {}) {
   const onEvent = opts.onEvent || (() => {});
   const token = opts.cancelToken || {};
-  const state = readEngineState(root) || freshState();
-  const manifest = planEngineInstall(root, { lockFile: opts.lockFile });
+  // WO-38: warm the engineRoot() override cache async — the rest of the
+  // install path never does a sync read.
+  await resolveEngineRoot(root);
+  const state = (await readEngineState(root)) || freshState();
+  const manifest = await planEngineInstall(root, { lockFile: opts.lockFile });
 
   const deps = opts.deps || {};
   const gpuCheck = deps.gpu || (() => checkGpu());
@@ -379,7 +411,7 @@ async function installEngine(root, opts = {}) {
 
   // ---- preflight: disk
   E('phase', { phase: 'preflight' });
-  const disk = diskCheck();
+  const disk = await diskCheck();
   if (!disk.ok) {
     const gb = (b) => (b / 1073741824).toFixed(1);
     return failResult(
@@ -416,18 +448,24 @@ async function installEngine(root, opts = {}) {
     );
   }
   const shipExe = shippedPythonExe(root);
-  const venvNeedsRebuild = !fs.existsSync(venvPython(root))
+  const venvExe = venvPython(root);
+  const venvPresent = await (async () => { try { await fsp.access(venvExe); return true; } catch { return false; } })();
+  const venvNeedsRebuild = !venvPresent
     || !state.python || state.python.version !== shipVer || state.python.exe !== shipExe;
   if (venvNeedsRebuild) {
     E('phase', { phase: 'venv' });
-    try { fs.rmSync(venvDir(root), { recursive: true, force: true }); } catch { /* ignore */ }
+    // WO-38: async delete + UI shows "Cleaning up old files..." — the old
+    // venv (~5.6 GB) delete MUST NOT block the event loop.
+    E('cleanupNote', { note: 'Cleaning up old files...' });
+    try { await fsp.rm(venvDir(root), { recursive: true, force: true }); } catch { /* ignore */ }
     let r = await runPy(shipExe, ['-m', 'venv', venvDir(root)]);
     if (!r.ok) {
       // WO-36(a): one retry after clearing the dir and waiting 2 s
       // (antivirus/file locks often clear on their own).
-      recordLastError(root, state, 'venv', r);
+      await recordLastError(root, state, 'venv', r);
       engineLog(`venv attempt 1 failed at ${venvDir(root)} — clearing dir, waiting 2 s, retrying once`);
-      try { fs.rmSync(venvDir(root), { recursive: true, force: true }); } catch { /* ignore */ }
+      E('cleanupNote', { note: 'Cleaning up old files...' });
+      try { await fsp.rm(venvDir(root), { recursive: true, force: true }); } catch { /* ignore */ }
       await sleep(2000);
       r = await runPy(shipExe, ['-m', 'venv', venvDir(root)]);
     }
@@ -436,24 +474,27 @@ async function installEngine(root, opts = {}) {
       // engine root (venv, wheelhouse, ComfyUI). The override is written to the
       // state file at the DEFAULT location, so engineRoot() resolves it on
       // every future run; all engine paths derive from engineRoot().
-      recordLastError(root, state, 'venv', r);
+      await recordLastError(root, state, 'venv', r);
       const ladEr = localAppDataEngineRoot();
       if (ladEr && ladEr !== engineRoot(root)) {
         engineLog(`venv failed twice at default root — falling back to ${ladEr}`);
         E('phase', { phase: 'venv-fallback', engineRoot: ladEr });
         const defEr = defaultEngineRoot(root);
-        fs.mkdirSync(defEr, { recursive: true });
+        await fsp.mkdir(defEr, { recursive: true });
         state.engineRootOverride = ladEr;
         // Pointer at the default location so engineRoot() finds it next run.
-        fs.writeFileSync(path.join(defEr, STATE_FILENAME),
+        await fsp.writeFile(path.join(defEr, STATE_FILENAME),
           JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2));
+        // WO-38: the override changed mid-install — refresh the cache NOW so
+        // every path below resolves to the fallback root, not the stale default.
+        _engineRootCache.set(path.resolve(root), ladEr);
         r = await runPy(shipExe, ['-m', 'venv', venvDir(root)]);
-        if (!r.ok) recordLastError(root, state, 'venv-fallback', r);
+        if (!r.ok) await recordLastError(root, state, 'venv-fallback', r);
         else { state.lastError = null; engineLog(`venv fallback OK at ${ladEr}`); }
       }
     }
     if (!r.ok) {
-      recordLastError(root, state, 'venv', r);
+      await recordLastError(root, state, 'venv', r);
       return failResult(
         'We could not set up the engine\'s Python workspace.',
         'Restart the install. If it keeps failing, reinstall TakeOne Studio.'
@@ -461,7 +502,7 @@ async function installEngine(root, opts = {}) {
     }
     state.python = { version: shipVer, exe: shipExe, venv: venvDir(root) };
     state.wheels = {}; state.inProgress = []; state.ready = false;
-    writeEngineState(root, state);
+    await writeEngineState(root, state);
   }
   if (wasCancelled()) return cancelledResult(0);
 
@@ -476,7 +517,7 @@ async function installEngine(root, opts = {}) {
     // WO-29: cancel deletes the in-progress partial (the dep reports freedBytes);
     // verified files stay for resume.
     if (dl.cancelled || wasCancelled()) return cancelledResult(dl.freedBytes);
-    recordLastError(root, state, 'download', { code: null, err: dl.why || '', out: '' });
+    await recordLastError(root, state, 'download', { code: null, err: dl.why || '', out: '' });
     return failResult(dl.why || 'Some engine files could not be downloaded.', dl.whatNext || 'Check your internet connection and try again. Downloaded files are kept.');
   }
   if (wasCancelled()) return cancelledResult(0);
@@ -495,12 +536,12 @@ async function installEngine(root, opts = {}) {
 
   const forceReinstall = new Set(state.inProgress || []); // amendment 2: resume reinstalls in-progress wheels
   state.inProgress = wheels.map((w) => w.file);
-  writeEngineState(root, state);
+  await writeEngineState(root, state);
 
   for (let i = 0; i < wheels.length; i++) {
     if (wasCancelled()) {
       state.inProgress = wheels.slice(i).map((w) => w.file);
-      writeEngineState(root, state);
+      await writeEngineState(root, state);
       // WO-29: nothing on disk to free mid-install (the wheel file is verified
       // and kept for resume); the interrupted wheel is force-reinstalled next time.
       return cancelledResult(0);
@@ -521,7 +562,7 @@ async function installEngine(root, opts = {}) {
     const r = await runPip(args);
     if (!r.ok) {
       state.inProgress = wheels.slice(i).map((x) => x.file);
-      recordLastError(root, state, `pip-install:${w.file}`, r);
+      await recordLastError(root, state, `pip-install:${w.file}`, r);
       return failResult(
         `The engine setup stopped on part ${i + 1} of ${wheels.length}. Nothing is broken — the parts already installed are kept.`,
         'Try the install again; it resumes from where it stopped. If it keeps stopping on the same part, reinstall TakeOne Studio.'
@@ -530,7 +571,7 @@ async function installEngine(root, opts = {}) {
     state.wheels[w.file] = { bytes: w.bytes, installedAt: new Date().toISOString() };
     state.inProgress = wheels.slice(i + 1).map((x) => x.file);
     doneBytes += w.bytes;
-    writeEngineState(root, state);
+    await writeEngineState(root, state);
     E('wheel', { index: i + 1, count: wheels.length, file: w.file, doneBytes, totalBytes: totalInstallBytes, done: true });
   }
 
@@ -538,7 +579,7 @@ async function installEngine(root, opts = {}) {
   E('phase', { phase: 'finalizing' });
   const chk = await runPip(['check']);
   if (!chk.ok) {
-    recordLastError(root, state, 'pip-check', chk);
+    await recordLastError(root, state, 'pip-check', chk);
     return failResult(
       'The engine\'s final self-check found a problem with its installed parts.',
       'Try the install again. If it keeps failing, reinstall TakeOne Studio.'
@@ -546,7 +587,7 @@ async function installEngine(root, opts = {}) {
   }
   const tc = await runPy(venvPython(root), ['-c', `import torch; assert torch.version.cuda == '${REQUIRED_TORCH_CUDA}', torch.version.cuda`]);
   if (!tc.ok) {
-    recordLastError(root, state, 'torch-cuda-check', tc);
+    await recordLastError(root, state, 'torch-cuda-check', tc);
     return failResult(
       'The engine installed, but its graphics support did not pass the final check.',
       'Update your NVIDIA driver and try again. If it keeps failing, reinstall TakeOne Studio.'
@@ -559,19 +600,23 @@ async function installEngine(root, opts = {}) {
     const r = await runPy(venvPython(root), ['-m', 'zipfile', '-e', zipPath, engineRoot(root)]);
     if (r.ok) {
       const extracted = path.join(engineRoot(root), `ComfyUI-${COMFYUI_COMMIT}`);
-      if (fs.existsSync(extracted) && !fs.existsSync(comfyDir(root))) {
-        fs.renameSync(extracted, comfyDir(root));
+      const extractedOk = await (async () => { try { await fsp.access(extracted); return true; } catch { return false; } })();
+      const comfyOk = await (async () => { try { await fsp.access(comfyDir(root)); return true; } catch { return false; } })();
+      if (extractedOk && !comfyOk) {
+        await fsp.rename(extracted, comfyDir(root));
       }
     }
   } catch { /* non-fatal: comfy boot will report a clear error */ }
-  writeModelPaths(root);
+  await writeModelPaths(root);
 
   // ---- ready: state + delete the wheelhouse to reclaim ~3.5 GB (amendment 5)
+  // WO-38: async delete + UI shows "Cleaning up old files..." — never blocks.
   state.ready = true;
   state.inProgress = [];
   state.phases.readyAt = new Date().toISOString();
-  writeEngineState(root, state);
-  deleteWheelhouse(root);
+  await writeEngineState(root, state);
+  E('cleanupNote', { note: 'Cleaning up old files...' });
+  await deleteWheelhouse(root);
 
   E('phase', { phase: 'ready' });
   return { ok: true };
@@ -606,24 +651,28 @@ async function defaultDownloadFiles(root, files, { onEvent, cancelToken }) {
 }
 
 /* ---------------------------------------------------------------- readiness */
-
-function venvExists(root) {
-  return fs.existsSync(venvPython(root));
+/** WO-38: async — no sync existsSync on the hot path. */
+async function venvExists(root) {
+  try { await fsp.access(venvPython(root)); return true; } catch { return false; }
 }
 
-function engineReady(root) {
-  const st = readEngineState(root);
-  return !!(st && st.ready && venvExists(root) && fs.existsSync(comfyDir(root)));
+/** WO-38: async. */
+async function engineReady(root) {
+  const st = await readEngineState(root);
+  if (!(st && st.ready)) return false;
+  if (!(await venvExists(root))) return false;
+  try { await fsp.access(comfyDir(root)); return true; } catch { return false; }
 }
 
-/** Throw a plain-words error when the engine is not ready (comfy.js uses this). */
-function assertEngineReady(root) {
-  if (engineReady(root)) return;
+/** Throw a plain-words error when the engine is not ready (comfy.js uses this).
+ *  WO-38: async. */
+async function assertEngineReady(root) {
+  if (await engineReady(root)) return;
   throw new Error('The AI engine is not installed yet. Install it from the Models page first — it is a one-time setup.');
 }
 
 async function ensureEngine(root, opts = {}) {
-  if (engineReady(root)) return { ok: true, already: true };
+  if (await engineReady(root)) return { ok: true, already: true };
   return installEngine(root, opts);
 }
 
@@ -648,7 +697,7 @@ async function installTool(root, toolId, opts = {}) {
   const token = opts.cancelToken || newCancelToken();
   const E = (type, data) => emit(onEvent, type, data);
 
-  if (!engineReady(root)) {
+  if (!(await engineReady(root))) {
     E('toolStep', { step: 1, of: 2, label: 'Setting up the AI engine (one-time)' });
     const eng = await installEngine(root, {
       onEvent: (e) => E('engine', e),
@@ -673,7 +722,7 @@ async function installTool(root, toolId, opts = {}) {
 
 module.exports = {
   // paths
-  engineRoot, defaultEngineRoot, localAppDataEngineRoot,
+  engineRoot, defaultEngineRoot, localAppDataEngineRoot, resolveEngineRoot,
   engineStatePath, venvDir, wheelhouseDir, comfyDir, modelPathsFile,
   shippedPythonExe, venvPython, lockPath, guardedDest,
   // state

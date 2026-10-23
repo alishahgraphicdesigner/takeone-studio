@@ -15,6 +15,20 @@
     cfg = await window.takeone.getConfig();
     if (!cfg) return;
     root = cfg.storageRoot;
+    // WO-39: show the boot-time storage notice once (protected folder move /
+    // Windows Security block). Plain words, dismissible.
+    try {
+      const notice = window.takeone.rootNotice && await window.takeone.rootNotice();
+      if (notice && notice.text) {
+        const host = $('#studioMain') || document.body;
+        const banner = document.createElement('div');
+        banner.className = 'notice-banner';
+        banner.innerHTML = `<span></span><button class="btn small ghost2" aria-label="Dismiss">Got it</button>`;
+        banner.querySelector('span').textContent = notice.text;
+        banner.querySelector('button').addEventListener('click', () => banner.remove());
+        host.prepend(banner);
+      }
+    } catch { /* non-fatal */ }
     renderSettings();
   }
 

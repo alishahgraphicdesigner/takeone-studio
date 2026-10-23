@@ -1,0 +1,76 @@
+{
+  "author": "TakeOne",
+  "build": {
+    "appId": "com.takeone.studio",
+    "directories": {
+      "output": "dist"
+    },
+    "extraResources": [
+      {
+        "from": "resources/python-3.11.17-windows-x86_64-install_only_stripped.tar.gz",
+        "to": "python.tar.gz"
+      },
+      {
+        "from": "resources/aria2c.exe",
+        "to": "aria2c.exe"
+      }
+    ],
+    "files": [
+      "main.js",
+      "main/**/*",
+      "preload.js",
+      "renderer/**/*",
+      "package.json",
+      "engine-lock.json"
+    ],
+    "nsis": {
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "installerHeaderIcon": "build/icon.ico",
+      "installerIcon": "build/icon.ico",
+      "license": "build/notice.txt",
+      "oneClick": true,
+      "perMachine": false,
+      "shortcutName": "TakeOne Studio",
+      "uninstallerIcon": "build/icon.ico",
+      "warningsAsErrors": false,
+      "include": "build/installer.nsh",
+      "artifactName": "TakeOne-Studio-${version}-setup.${ext}"
+    },
+    "productName": "TakeOne Studio",
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "arch": [
+            "x64"
+          ],
+          "target": "nsis"
+        }
+      ],
+      "signAndEditExecutable": false
+    },
+    "afterPack": "./build/after-pack.js"
+  },
+  "description": "TakeOne Studio \u2014 the AI film studio that knows you. Local, private, one-time purchase.",
+  "license": "UNLICENSED",
+  "main": "main.js",
+  "name": "takeone-studio",
+  "productName": "TakeOne Studio",
+  "scripts": {
+    "dist": "node build/dist.js",
+    "start": "electron .",
+    "test": "node --test --test-timeout=120000 test/*.test.js"
+  },
+  "version": "2.2.12",
+  "devDependencies": {
+    "electron": "^38.8.6",
+    "electron-builder": "^26.15.3",
+    "resedit": "^3.1.0"
+  },
+  "dependencies": {
+    "tar": "^7.5.22"
+  }
+}
