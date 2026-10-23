@@ -18,9 +18,12 @@ const fsp = fs.promises;
 const os = require('os');
 const path = require('path');
 
-/** Default root: %LOCALAPPDATA%\TakeOne (never a protected folder). */
+/** Default root: %LOCALAPPDATA%\TakeOne (never a protected folder).
+ *  NOTE: Electron's app.getPath has NO 'localAppData' name — use the
+ *  LOCALAPPDATA env var directly (always set on Windows). */
 function defaultRoot(getPath) {
-  const lad = (getPath && getPath('localAppData')) || process.env.LOCALAPPDATA;
+  const lad = process.env.LOCALAPPDATA
+    || (getPath && (() => { try { return getPath('appData').replace(/Roaming$/i, 'Local'); } catch { return null; } })());
   if (lad) return path.win32.join(lad, 'TakeOne');
   // Non-Windows / no LOCALAPPDATA: fall back to the user's home.
   return path.join(os.homedir(), 'TakeOne');

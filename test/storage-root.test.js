@@ -17,12 +17,28 @@ describe('WO-39 protected folders', () => {
     videos: 'C:\\Users\\Ali\\Videos',
     music: 'C:\\Users\\Ali\\Music',
     desktop: 'C:\\Users\\Ali\\Desktop',
-    localAppData: 'C:\\Users\\Ali\\AppData\\Local',
+    appData: 'C:\\Users\\Ali\\AppData\\Roaming',
   };
   const gp = fakeGetPath(winPaths);
 
   it('default root is %LOCALAPPDATA%\\TakeOne', () => {
-    assert.equal(sr.defaultRoot(gp), 'C:\\Users\\Ali\\AppData\\Local\\TakeOne');
+    const oldLad = process.env.LOCALAPPDATA;
+    process.env.LOCALAPPDATA = 'C:\\Users\\Ali\\AppData\\Local';
+    try {
+      assert.equal(sr.defaultRoot(gp), 'C:\\Users\\Ali\\AppData\\Local\\TakeOne');
+    } finally {
+      if (oldLad === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = oldLad;
+    }
+  });
+  it('default root falls back to appData Roaming->Local when no env', () => {
+    const oldLad = process.env.LOCALAPPDATA;
+    delete process.env.LOCALAPPDATA;
+    try {
+      assert.equal(sr.defaultRoot(gp), 'C:\\Users\\Ali\\AppData\\Local\\TakeOne');
+    } finally {
+      if (oldLad !== undefined) process.env.LOCALAPPDATA = oldLad;
+    }
   });
   it('detects Documents/Pictures/Videos/Music/Desktop', () => {
     assert.equal(sr.isProtectedFolder('C:\\Users\\Ali\\Videos\\TakeOne Studio', gp), true);
