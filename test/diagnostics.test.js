@@ -97,6 +97,9 @@ describe('WO-35: nvidia-smi never blocks the report', () => {
   const base = {
     version: '2.2.11', windows: 'w', engineSummary: 's', disk: 'd',
     appLog: 'a', comfyLog: 'c',
+    // WO-39: isolate the nvidia-smi timing — the storage section has its own
+    // PowerShell calls (real on Windows CI).
+    engineSection: 'Root: x', storageSection: 'Root: x', prevSession: '',
   };
   it('missing nvidia-smi: report still arrives, fast', async () => {
     const t0 = Date.now();

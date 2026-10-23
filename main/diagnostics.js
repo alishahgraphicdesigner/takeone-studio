@@ -147,11 +147,14 @@ async function storageSection(root, over = {}) {
     } catch { prot = 'unknown'; }
   }
   lines.push(`Protected folder: ${prot}`);
-  const sec = over.security || await querySecurity(over.runExec);
+  // WO-39: run both PowerShell queries in parallel — each has its own 5 s
+  // timeout, so the section never takes more than ~5 s total.
+  const [sec, blocks] = await Promise.all([
+    over.security ? over.security : querySecurity(over.runExec),
+    over.defenderBlocks !== undefined ? over.defenderBlocks : queryDefenderBlocks(over.runExec),
+  ]);
   lines.push(`Controlled Folder Access: ${sec.controlledFolderAccess}`);
   lines.push(`Defender real-time protection: ${sec.defenderRealTime}`);
-  const blocks = over.defenderBlocks !== undefined ? over.defenderBlocks
-    : await queryDefenderBlocks(over.runExec);
   if (blocks && blocks.length) {
     lines.push('Recently blocked by Controlled Folder Access:');
     for (const b of blocks) lines.push('  ' + b);
