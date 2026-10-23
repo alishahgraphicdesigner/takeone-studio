@@ -106,7 +106,8 @@ jobs:
             if ((Test-Path $log) -and ((Get-Content $log -Raw) -match 'wizard: page loaded')) { $ok = $true; break }
           }
           if (-not $ok) { throw 'The app did not reach the wizard within 180 s' }
-          $py = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'TakeOne\.python\python.exe'
+          # WO-39: the default root moved from Documents to %LOCALAPPDATA%.
+          $py = Join-Path $env:LOCALAPPDATA 'TakeOne\.python\python.exe'
           if (-not (Test-Path $py)) { throw "Bundled Python was not unpacked: $py" }
           $ver = & $py --version
           if ($ver -notmatch '3\.11') { throw "Bundled Python reports '$ver', expected 3.11" }

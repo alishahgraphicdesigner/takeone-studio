@@ -231,8 +231,19 @@ function receiptPath() { return path.join(receiptDir(), 'receipt.json'); }
 // WO-39: default root is %LOCALAPPDATA%\TakeOne — never a Windows protected
 // folder (Documents/Pictures/Videos/Music/Desktop), so Controlled Folder
 // Access can't block the engine install.
-const storageRootMod = require('./main/storage-root.js');
-function defaultRoot() { return storageRootMod.defaultRoot(app.getPath.bind(app)); }
+// NOTE: lazy require — a top-level require here crashed the packaged app on
+// Windows (root cause under investigation); lazy + defensive never blocks boot.
+function defaultRoot() {
+  try {
+    const sr = require('./main/storage-root.js');
+    return sr.defaultRoot(app.getPath.bind(app));
+  } catch (err) {
+    try { global.__takeoneLog && global.__takeoneLog('defaultRoot fallback: ' + String(err && err.message || err)); } catch {}
+    // Ultimate fallback: never let a path lookup crash boot.
+    try { return path.join(os.homedir(), 'TakeOne'); }
+    catch { return path.join(os.tmpdir(), 'TakeOne'); }
+  }
+}
 function configPath(root) { return path.join(root, 'config.json'); }
 function pythonDir(root) { return path.join(root, '.python'); }
 function bundledPythonTarball() { return path.join(process.resourcesPath, 'python.tar.gz'); }
@@ -789,8 +800,11 @@ async function boot() {
   // The old files are NEVER touched, moved or deleted.
   try {
     const getP = app.getPath.bind(app);
-    if (storageRootMod.isProtectedFolder(root, getP)) {
-      const ladRoot = storageRootMod.defaultRoot(getP);
+    let srMod = null;
+    try { srMod = require('./main/storage-root.js'); }
+    catch (e) { try { global.__takeoneLog && global.__takeoneLog('storage-root module missing: ' + String(e && e.message || e)); } catch {} }
+    if (srMod && srMod.isProtectedFolder(root, getP)) {
+      const ladRoot = srMod.defaultRoot(getP);
       if (path.resolve(ladRoot) !== path.resolve(root)) {
         protectedFrom = root;
         rootNotice = {
@@ -810,10 +824,10 @@ async function boot() {
     }
     // WO-39: startup test-write. If Windows Security blocks the root,
     // say so in plain words and fall back to LOCALAPPDATA automatically.
-    const probe = await storageRootMod.probeWritable(root);
-    if (!probe.ok && storageRootMod.isBlockedBySecurity(probe.code)) {
-      const ladRoot = storageRootMod.defaultRoot(getP);
-      const msg = storageRootMod.blockedMessage(root);
+    const probe = await srMod.probeWritable(root);
+    if (!probe.ok && srMod.isBlockedBySecurity(probe.code)) {
+      const ladRoot = srMod.defaultRoot(getP);
+      const msg = srMod.blockedMessage(root);
       if (path.resolve(ladRoot) !== path.resolve(root)) {
         rootNotice = {
           kind: 'blocked-fallback', from: root, to: ladRoot,
