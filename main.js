@@ -1057,6 +1057,10 @@ function wireIPC() {
   const { sdxlLightningTxt2Img } = require('./main/comfy-workflows.js');
   const engine = require('./main/engine.js');
   let comfyMgr = null;
+  // WO-43: per-prompt sidecar facts for the Library save. The renderer knows
+  // the prompt text, but only main knows the seed + model it queued — so
+  // generate stashes them here keyed by promptId, and fetchOutput reads them.
+  const qgMeta = new Map();
   function getComfy(root) {
     if (!comfyMgr) {
       comfyMgr = createEngineComfy({
@@ -1182,12 +1186,16 @@ function wireIPC() {
     }
     // (Preflight failure itself is not fatal: queueing will surface a plain
     // error if the model really is missing.)
+    // WO-43: the seed is chosen HERE (not inside the workflow builder) so
+    // the Library sidecar can record exactly what was generated.
+    const seed = Math.floor(Math.random() * 1000000000);
     const workflow = sdxlLightningTxt2Img({
       checkpoint,
       positive: params.prompt || '',
       negative: params.negative || '',
       width: params.width || 1024,
       height: params.height || 1024,
+      seed,
     });
     const q = await mgr.queuePrompt(workflow);
     if (!q.ok) {
@@ -1197,7 +1205,27 @@ function wireIPC() {
       const { rawError, ...plain } = q;
       return plain;
     }
+    qgMeta.set(q.promptId, {
+      prompt: params.prompt || '', model: checkpoint, seed,
+      width: params.width || 1024, height: params.height || 1024,
+    });
     return q;
+  });
+  // WO-43: fetch a finished Quick Generate image through main (never a
+  // browser <img> to a local URL) and save it to the Library. While the
+  // prompt has no outputs yet, { notFinished:true } — the renderer keeps
+  // polling. On success the entry is dropped from the stash.
+  ipcMain.handle('takeone:comfyFetchOutput', async (e, root, promptId, prompt) => {
+    try {
+      const r = root || defaultRoot();
+      if (!comfyMgr) return { ok: false, error: 'Not running.' };
+      const meta = qgMeta.get(promptId) || { prompt: prompt || '' };
+      const res = await comfyMgr.fetchAndSaveOutput(r, promptId, meta);
+      if (res.ok) qgMeta.delete(promptId);
+      return res;
+    } catch (err) {
+      return { ok: false, error: "The image was made but couldn't be saved." };
+    }
   });
   ipcMain.handle('takeone:comfyHistory', async (e, promptId) => {
     if (!comfyMgr) return { ok: false, error: 'Not running.' };

@@ -23,6 +23,14 @@ const START_TIMEOUT_MS = 300000; // 5 min: CPU boot on a slow CI runner (torch i
 /** WO-41: the plain message when ComfyUI cannot see the Image Studio model. */
 const MODEL_NOT_VISIBLE_MSG = "Image Studio's model isn't visible to the engine. Open Models and tap Check again.";
 
+/** WO-43: PNG magic bytes (89 50 4E 47 0D 0A 1A 0A) — a /view reply that is
+ *  not a PNG (an error page, a redirect target) must never be saved as one. */
+function isPng(buf) {
+  return Buffer.isBuffer(buf) && buf.length >= 8
+    && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47
+    && buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a;
+}
+
 /** App-log line sink: main.js defines global.__takeoneLog; plain-node use (e2e/tests) has none. */
 function logToApp(line) {
   try { if (global.__takeoneLog) global.__takeoneLog(line); } catch { /* logging never breaks boot */ }
@@ -370,6 +378,90 @@ class ComfyManager {
     } catch (e) {
       return { ok: false, error: e.message };
     }
+  }
+
+  /** Binary GET (for /view): returns { status, contentType, buffer }. */
+  _getBinary(p) {
+    return new Promise((resolve, reject) => {
+      const req = http.get(`http://127.0.0.1:${this.port}${p}`, (res) => {
+        const chunks = [];
+        res.on('data', (c) => { chunks.push(c); });
+        res.on('end', () => resolve({
+          status: res.statusCode,
+          contentType: res.headers['content-type'] || '',
+          buffer: Buffer.concat(chunks),
+        }));
+      });
+      req.on('error', reject);
+      req.setTimeout(60000, () => { req.destroy(); reject(new Error('timeout')); });
+    });
+  }
+
+  /**
+   * WO-43: fetch a finished generation's image THROUGH THE MAIN PROCESS
+   * (Node http — no browser, no origin, no <img> to a local URL) and save
+   * it to the Library, with a sidecar JSON. This replaces the renderer's
+   * old `<img src="http://127.0.0.1:<port>/view?...">`, which rendered as a
+   * broken image on Ali's PC (v2.2.17).
+   *
+   * Returns:
+   *   { ok:true, path, fileName, bytes, dataUrl, comfyFile } on success.
+   *   { ok:false, notFinished:true } while the prompt has no outputs yet.
+   *   { ok:false, error } in plain words otherwise. When the image EXISTS
+   *   in history but fetch/save fails, the error starts "The image was made
+   *   but couldn't be saved." — the generation itself is not the failure.
+   *   The raw status + Content-Type go to the app log, never to the UI.
+   */
+  async fetchAndSaveOutput(root, promptId, meta = {}) {
+    if (!this.ready) return { ok: false, error: 'ComfyUI is not running.' };
+    const h = await this.getHistory(promptId);
+    if (!h.ok) return { ok: false, error: h.error };
+    const outs = h.history && h.history.outputs;
+    if (!outs) return { ok: false, notFinished: true };
+    const imgNode = Object.values(outs).find((o) => o.images && o.images.length);
+    if (!imgNode) return { ok: false, notFinished: true };
+    const img = imgNode.images[0];
+    const viewPath = `/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`;
+    let bin;
+    try {
+      bin = await this._getBinary(viewPath);
+    } catch (e) {
+      logToApp(`Quick Generate /view fetch failed: ${e.message}`);
+      return { ok: false, error: "The image was made but couldn't be saved. ComfyUI could not be reached to fetch it." };
+    }
+    if (bin.status !== 200) {
+      logToApp(`Quick Generate /view failed: status ${bin.status}, content-type ${bin.contentType}`);
+      return { ok: false, error: `The image was made but couldn't be saved. ComfyUI returned status ${bin.status} when fetching it.` };
+    }
+    if (!isPng(bin.buffer)) {
+      logToApp(`Quick Generate /view returned non-PNG bytes: content-type ${bin.contentType}, ${bin.buffer.length} bytes`);
+      return { ok: false, error: "The image was made but couldn't be saved. What ComfyUI returned was not a PNG image." };
+    }
+    const dir = path.join(root, 'Library', 'Quick Generate');
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-')
+      + '-' + Math.random().toString(36).slice(2, 6);
+    const fileName = `${stamp}.png`;
+    const pngPath = path.join(dir, fileName);
+    try {
+      await fsp.mkdir(dir, { recursive: true });
+      await fsp.writeFile(pngPath, bin.buffer);
+      const sidecar = {
+        prompt: meta.prompt || '', model: meta.model || '', seed: meta.seed ?? null,
+        width: meta.width || null, height: meta.height || null, promptId,
+        comfyFile: { filename: img.filename, subfolder: img.subfolder || '', type: img.type || 'output' },
+        bytes: bin.buffer.length, savedAt: new Date().toISOString(), source: 'quick-generate',
+      };
+      await fsp.writeFile(path.join(dir, `${stamp}.json`), JSON.stringify(sidecar, null, 2), 'utf8');
+    } catch (e) {
+      logToApp(`Quick Generate save failed: ${e.message}`);
+      return { ok: false, error: "The image was made but couldn't be saved. TakeOne could not write it to the Library." };
+    }
+    logToApp(`Quick Generate saved: ${pngPath} (${bin.buffer.length} bytes)`);
+    return {
+      ok: true, path: pngPath, fileName, bytes: bin.buffer.length,
+      dataUrl: 'data:image/png;base64,' + bin.buffer.toString('base64'),
+      comfyFile: { filename: img.filename, subfolder: img.subfolder || '', type: img.type || 'output' },
+    };
   }
 
   /** Stop ComfyUI gracefully. */

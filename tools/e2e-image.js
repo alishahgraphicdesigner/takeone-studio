@@ -9,9 +9,11 @@
  * Steps: install engine -> fetch SDXL-Lightning checkpoint (sha256-verified)
  * into <root>/Models/image ONLY -> ComfyUI --cpu (via the shared path, so
  * extra_model_paths must work or the test fails) -> assert the extra search
- * path log line + loader preflight -> queue 1 prompt (512x512) -> wait for
- * PNG -> assert: file exists, dimensions 512x512, pixel variance > threshold
- * (a black or solid-colour image fails).
+ * path log line + loader preflight -> queue 1 prompt (512x512) -> wait via
+ * the APP's fetchAndSaveOutput (Node /view fetch -> Library/Quick Generate
+ * + sidecar, WO-43) -> assert on the SAVED file: exists, PNG magic,
+ * dimensions 512x512, pixel variance > threshold (a black or solid-colour
+ * image fails) -> /view probe with file-origin headers (info only).
  *
  * PNG decode is dependency-free (node:zlib + a minimal unfilter implementation).
  */
@@ -219,20 +221,52 @@ async function main() {
   if (!q.ok) throw new Error('queuePrompt failed: ' + (q.error || 'unknown'));
   log('queued prompt', q.promptId || q.id);
 
-  // 5. Wait for the PNG (poll history, timeout 20 min on CPU).
+  // 5. Wait for the PNG through the APP's own path (WO-43): poll
+  // fetchAndSaveOutput (timeout 20 min on CPU). It fetches /view via Node,
+  // validates PNG magic, and saves to Library/Quick Generate + sidecar.
+  // The old path (read the PNG out of ComfyUI's output dir directly) is
+  // gone — the app never touches that dir anymore.
   const deadline = Date.now() + 20 * 60 * 1000;
-  let pngPath = null;
+  let saved = null;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 15000));
-    const h = await mgr.getHistory(q.promptId || q.id);
-    const outs = JSON.stringify(h);
-    const m = outs.match(/"filename"\s*:\s*"([^"]+\.png)"/);
-    if (m) { pngPath = m[1]; break; }
+    const r = await mgr.fetchAndSaveOutput(ROOT, q.promptId || q.id, { prompt: PROMPT, model: 'sdxl_lightning_4step.safetensors' });
+    if (r.ok) { saved = r; break; }
+    if (!r.notFinished) throw new Error('fetchAndSaveOutput failed: ' + r.error);
     log('waiting for output...');
   }
-  if (!pngPath) throw new Error('timed out waiting for the generated PNG (20 min on CPU)');
-  const full = path.isAbsolute(pngPath) ? pngPath : path.join(mgr.comfyDir, 'output', pngPath);
-  log('output:', full);
+  if (!saved) throw new Error('timed out waiting for the generated PNG (20 min on CPU)');
+  const full = saved.path;
+  log('output (Library):', full);
+  log('dataUrl bytes:', saved.dataUrl.length, '| comfy file:', JSON.stringify(saved.comfyFile));
+  // Sidecar must exist next to the PNG and carry prompt + model.
+  const sidecarPath = full.replace(/\.png$/i, '.json');
+  if (!fs.existsSync(sidecarPath)) throw new Error('sidecar JSON missing: ' + sidecarPath);
+  const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+  if (sidecar.prompt !== PROMPT || sidecar.model !== 'sdxl_lightning_4step.safetensors') {
+    throw new Error('sidecar mismatch: ' + JSON.stringify(sidecar));
+  }
+  log('sidecar OK:', sidecarPath);
+  // WO-43.4 (INFO ONLY — never fails the run): probe /view the way the OLD
+  // renderer path loaded it, to learn why it broke on Ali's PC. ComfyUI's
+  // /view is hit (a) with browser-like file-origin headers and (b) plain,
+  // and both statuses + content-types are logged.
+  {
+    const viewQs = `filename=${encodeURIComponent(saved.comfyFile.filename)}&subfolder=${encodeURIComponent(saved.comfyFile.subfolder || '')}&type=${encodeURIComponent(saved.comfyFile.type || 'output')}`;
+    const probe = (headers) => new Promise((resolve) => {
+      const http = require('http');
+      const req = http.get({ hostname: '127.0.0.1', port: mgr.port, path: '/view?' + viewQs, headers }, (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode, contentType: res.headers['content-type'] || '' }));
+      });
+      req.on('error', (e) => resolve({ status: 'error', contentType: e.message }));
+      req.setTimeout(15000, () => { req.destroy(); resolve({ status: 'timeout', contentType: '' }); });
+    });
+    const withHeaders = await probe({ Origin: 'file://', 'Sec-Fetch-Site': 'cross-site' });
+    const plain = await probe({});
+    log(`[/view probe] file-origin headers -> status ${withHeaders.status}, content-type ${withHeaders.contentType}`);
+    log(`[/view probe] plain Node request -> status ${plain.status}, content-type ${plain.contentType}`);
+  }
 
   // 6. Assertions: exists, 512x512, variance > threshold.
   if (!fs.existsSync(full)) throw new Error('PNG file does not exist: ' + full);

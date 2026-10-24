@@ -283,6 +283,37 @@ async function queryComfyCheckpoints(port, httpGet) {
   }
 }
 
+/**
+ * WO-43: the last "Prompt executed in X seconds" line from the ComfyUI log
+ * (ComfyUI prints it when a prompt finishes). Returns null when no
+ * generation has completed in the stored log. ANSI + [out]/[err] prefixes
+ * are stripped for readability.
+ */
+function lastGenerationLine(root, over) {
+  if (over !== undefined) return over;
+  let text = '';
+  try { text = fs.readFileSync(comfyLogPath(root), 'utf8'); } catch { return null; }
+  const lines = text.split(/\r?\n/).filter((l) => /Prompt executed in .* seconds/i.test(l));
+  if (!lines.length) return null;
+  return stripAnsi(lines[lines.length - 1]).replace(/^\[(out|err)\]\s*/, '').trim();
+}
+
+/** WO-43: the last 5 Quick Generate PNGs in <root>/Library/Quick Generate, newest first. */
+function listQuickOutputs(root, over) {
+  if (over !== undefined) return over;
+  const dir = path.join(root, 'Library', 'Quick Generate');
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((n) => /\.png$/i.test(n)); } catch { return []; }
+  const fmt = (b) => b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : Math.max(1, Math.round(b / 1048576)) + ' MB';
+  const withTime = [];
+  for (const n of names) {
+    try { const st = fs.statSync(path.join(dir, n)); withTime.push({ n, mtime: st.mtimeMs, size: st.size }); }
+    catch { /* unreadable — skip */ }
+  }
+  withTime.sort((a, b) => b.mtime - a.mtime);
+  return withTime.slice(0, 5).map((x) => `${x.n} (${fmt(x.size)})`);
+}
+
 /** WO-41: files in <root>/Models/image as "name (size)" lines (max 20 + overflow). */
 function listModelFiles(root, over) {
   if (over !== undefined) return over;
@@ -405,6 +436,9 @@ async function buildDiagnosticsReport(root, over = {}) {
   const storSection = over.storageSection !== undefined ? over.storageSection
     : await storageSection(root, over);
 
+  // WO-43: last generation + last Library outputs (injected via over for tests).
+  const lastGen = over.lastGeneration !== undefined ? over.lastGeneration : lastGenerationLine(root);
+  const quickOuts = over.quickOutputs !== undefined ? over.quickOutputs : listQuickOutputs(root);
   const report = [
     'TakeOne Studio diagnostics',
     '===========================',
@@ -426,6 +460,12 @@ async function buildDiagnosticsReport(root, over = {}) {
     `--- ComfyUI log (last ${LOG_TAIL_LINES} lines) ---`,
     comfyLog,
     '',
+    '--- Last generation ---',
+    lastGen || '(no completed generation in the ComfyUI log yet)',
+    '',
+    '--- Quick Generate outputs (last 5, Library\\Quick Generate) ---',
+    quickOuts.length ? quickOuts.map((o) => '  ' + o).join('\n') : '  (none saved yet)',
+    '',
     prevSession ? prevSession + '\n' : '',
     '(user names in paths are masked; no passwords or keys are included)',
   ].join('\n');
@@ -439,6 +479,7 @@ module.exports = {
   buildDiagnosticsReport, maskReport, maskUserName, scrubSecrets, stripAnsi,
   tailFile, sessionLogTail, previousSessionSection, comfyLogPath, appendComfyLog, queryGpu,
   querySecurity, queryDefenderBlocks, queryComfyCheckpoints, listModelFiles,
+  lastGenerationLine, listQuickOutputs,
   isOneDrivePath, engineSection, storageSection,
   LOG_TAIL_LINES, GPU_QUERY_TIMEOUT_MS,
 };

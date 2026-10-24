@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('takeone', {
   comfyStop: () => ipcRenderer.invoke('takeone:comfyStop'),
   comfyStatus: () => ipcRenderer.invoke('takeone:comfyStatus'),
   comfyGenerate: (root, params) => ipcRenderer.invoke('takeone:comfyGenerate', root, params),
+  // WO-43: fetch + Library-save a finished Quick Generate image (main process).
+  comfyFetchOutput: (root, promptId, prompt) => ipcRenderer.invoke('takeone:comfyFetchOutput', root, promptId, prompt),
   comfyHistory: (promptId) => ipcRenderer.invoke('takeone:comfyHistory', promptId),
   comfyInterrupt: () => ipcRenderer.invoke('takeone:comfyInterrupt'),
   brainLearn: (root, context, action, reward) => ipcRenderer.invoke('takeone:brainLearn', root, context, action, reward),

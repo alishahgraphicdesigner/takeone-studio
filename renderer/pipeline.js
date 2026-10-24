@@ -254,7 +254,7 @@
           return;
         }
         const pid = r.promptId;
-        const port = r.port || 8188; // WO-27: never hardcode 8188 — ComfyUI picks a free port
+        const qgPromptText = prompt.trim();
         let genCancelled = false;
         if (out) out.innerHTML = 'Generating… (this takes a minute on first run) <button class="btn small ghost2" id="qgCancel">Cancel</button>';
         const cancelBtn = document.getElementById('qgCancel');
@@ -262,20 +262,27 @@
           genCancelled = true;
           try { await window.takeone.comfyInterrupt(); } catch { /* best effort */ }
         });
-        // Poll for completion (max 5 min)
+        // WO-43: poll MAIN for the finished image — main fetches /view
+        // itself and saves the PNG to the Library, then hands the renderer
+        // a dataUrl. The old path (<img src="http://127.0.0.1:<port>/view…">)
+        // rendered as a broken image on Ali's PC (v2.2.17) and saved
+        // nothing; it is deleted, not kept as a fallback.
         for (let i = 0; i < 60; i++) {
           await new Promise((res) => setTimeout(res, 5000));
           if (genCancelled) { if (out) out.textContent = 'Cancelled.'; return; }
-          const h = await window.takeone.comfyHistory(pid);
-          if (h.ok && h.history && h.history.outputs) {
-            const outs = h.history.outputs;
-            const imgNode = Object.values(outs).find((o) => o.images && o.images.length);
-            if (imgNode) {
-              const img = imgNode.images[0];
-              const url = `http://127.0.0.1:${port}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${encodeURIComponent(img.type || 'output')}`;
-              if (out) out.innerHTML = `<img src="${url}" style="max-width:100%; border-radius:8px; margin-top:8px;" />`;
-              break;
-            }
+          const f = await window.takeone.comfyFetchOutput(root, pid, qgPromptText);
+          if (f && f.ok) {
+            if (out) out.innerHTML = `<img src="${esc(f.dataUrl)}" style="max-width:100%; border-radius:8px; margin-top:8px;" />` +
+              `<div style="margin-top:8px;"><b>Saved to Library</b> <span class="muted small">${esc(f.path)}</span></div>` +
+              `<button class="btn small" id="qgOpenFolder">Open folder</button>`;
+            const of = document.getElementById('qgOpenFolder');
+            if (of) of.addEventListener('click', () => window.takeone.showInFolder(f.path));
+            break;
+          }
+          if (f && !f.notFinished) {
+            // Plain words by construction (main never returns raw JSON here).
+            if (out) out.textContent = 'Error: ' + (f.error || 'failed');
+            break;
           }
           if (out) out.textContent = `Generating… ${Math.floor((i + 1) * 5 / 60)}m ${((i + 1) * 5) % 60}s`;
         }
