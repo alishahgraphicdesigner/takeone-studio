@@ -847,6 +847,10 @@ async function boot() {
   } catch (err) {
     try { global.__takeoneLog && global.__takeoneLog('WO-39 root resolve failed: ' + String(err && err.message || err)); } catch {}
   }
+  // WO-40: the smoke test proves the resolved root from the app log, so the
+  // final root is always logged here (normal path, protected move, and
+  // blocked fallback alike) — never only on the move/fallback branches.
+  try { global.__takeoneLog && global.__takeoneLog('storage root: ' + root); } catch {}
   global.__takeoneRootNotice = rootNotice;
   // Stale install states: no pip process survives a restart, so 'installing',
   // 'queued', or 'cancelling' on boot is a lie. Reset to neutral — the user

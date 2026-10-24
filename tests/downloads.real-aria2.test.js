@@ -96,15 +96,25 @@ test('C. engine killed mid-download (≥12 s in), restart: continues, does not s
 
 test('D. HF job interrupted mid-way: verified files are not fetched again', async () => {
   const sizes = [12 * MB, 12 * MB, 8 * MB]; const COMMIT = 'b'.repeat(40);
+  const key0 = `/o/r/resolve/${COMMIT}/d0/f0.bin`;
   const files = {}; sizes.forEach((z, i) => { files[`/o/r/resolve/${COMMIT}/d${i}/f${i}.bin`] = { size: z, seed: 20 + i }; });
   const { s, root } = await setup(files);
   const tool = { id: 'vid', installType: 'hf', repo: 'o/r', commit: COMMIT, category: 'video', files: sizes.map((z, i) => ({ path: `d${i}/f${i}.bin`, bytes: z, sha256: shaOfPattern(z, 20 + i) })) };
   let m = await mgr(root, s); await m.addHfDownload(tool);
   await waitFor(() => m.getState('vid').currentFileIndex === 1 && m.getState('vid').progress > 0.55, 90000, 'file 1 under way');
   await m.persist(); crash(m); await sleep(500);
+  // WO-40.3: snapshot file 0 AT THE CRASH — the old total-served check
+  // could not tell a re-download from the pre-crash download. Only bytes
+  // served AFTER the restart count, and they must be <= 2% of file 0.
+  const servedFile0AtCrash = s.served[key0] || 0;
   m = await mgr(root, s); await m.resume('vid');
   await waitFor(() => m.getState('vid').status === 'done', 90000, 'hf done');
-  assert.ok((s.served[`/o/r/resolve/${COMMIT}/d0/f0.bin`] || 0) <= sizes[0] * 1.02, 'verified file 0 was downloaded again');
+  const servedFile0After = s.served[key0] || 0;
+  const reServed = servedFile0After - servedFile0AtCrash;
+  const pct = (reServed / sizes[0]) * 100;
+  assert.ok(reServed <= sizes[0] * 0.02,
+    `verified file 0 was downloaded again: re-served ${reServed} bytes (${pct.toFixed(2)}% of file 0's ${sizes[0]} bytes) after restart; ` +
+    `served at crash ${servedFile0AtCrash} bytes, served after done ${servedFile0After} bytes, allowed <= ${Math.floor(sizes[0] * 0.02)} bytes (2%)`);
   sizes.forEach((z, i) => assert.strictEqual(fs.statSync(path.join(root, 'Models', 'video', 'vid', `d${i}`, `f${i}.bin`)).size, z));
 });
 

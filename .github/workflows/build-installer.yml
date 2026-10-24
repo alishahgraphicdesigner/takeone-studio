@@ -2,8 +2,15 @@ name: build-installer
 # WO-31/WO-33: release-candidate installer artifact (NOT a release).
 # Runs only manually (workflow_dispatch). WO-33: artifact name
 # "TakeOne-Studio-<version>-run<N>" + SHA256.txt, both built in CI.
+# WO-40.4: the gate below is mandatory — this workflow builds ONLY from a
+# commit whose verify workflow is ALL green (every job success/skipped).
+# A red or still-running verify fails this workflow before any build.
 on:
   workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
   build-installer:
@@ -17,6 +24,23 @@ jobs:
 
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
+
+      # WO-40.4 gate: fail-closed. The installer name/version below come
+      # from THIS commit (the checkout), so the gate checks THIS commit's
+      # verify runs — never another commit's green run.
+      - name: WO-40 gate — verify all green for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $sha = $env:GITHUB_SHA
+          Write-Host "Gate: checking verify runs for commit $sha"
+          gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/verify.yml/runs?head_sha=$sha&per_page=20" > runs.json
+          $runs = Get-Content runs.json -Raw | ConvertFrom-Json
+          $latest = $runs.workflow_runs | Where-Object { $_.status -eq 'completed' } | Select-Object -First 1
+          if (-not $latest) { Get-Content runs.json; throw "WO-40 gate: no completed verify run for commit $sha — run verify first and wait for green" }
+          gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$($latest.id)/jobs?per_page=100" > jobs.json
+          node tools/verify-green-gate.js runs.json jobs.json $sha
+          if ($LASTEXITCODE -ne 0) { throw 'WO-40 gate FAILED: verify is not all-green for this commit — installer will not be built' }
 
       # WO-34: a version maps to exactly one commit — rebuilding the same
       # version from different code fails the build.
