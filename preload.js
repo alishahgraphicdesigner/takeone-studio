@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('takeone', {
   catalog: () => ipcRenderer.invoke('takeone:catalog'),
   installPlan: (toolId) => ipcRenderer.invoke('takeone:installPlan', toolId),
   toolStates: (root) => ipcRenderer.invoke('takeone:toolStates', root),
+  // WO-41.5: Studio Image-step readiness — the single source of truth.
+  imageStepReady: (root) => ipcRenderer.invoke('takeone:imageStepReady', root),
   verifyTool: (toolId, root) => ipcRenderer.invoke('takeone:verifyTool', toolId, root),
   comfyStart: (root) => ipcRenderer.invoke('takeone:comfyStart', root),
   comfyStop: () => ipcRenderer.invoke('takeone:comfyStop'),

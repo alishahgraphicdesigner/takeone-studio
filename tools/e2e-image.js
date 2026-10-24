@@ -2,14 +2,15 @@
 /* WO-22 driver: end-to-end "Studio se asli output file" on CI (Windows, CPU).
  *
  * Uses the SAME code the app will run:
- *   - main/engine.js  -> installEngine()  (WO-21; module does not exist yet —
- *     this driver fails fast with MODULE_NOT_FOUND until the implementation lands)
- *   - main/comfy-workflows.js -> sdxlTxt2Img() (real workflow builder)
- *   - main/comfy.js   -> ComfyManager (real ComfyUI process control)
+ *   - main/engine.js  -> installEngine()
+ *   - main/comfy-workflows.js -> sdxlLightningTxt2Img() (shared Lightning workflow)
+ *   - main/comfy.js   -> createEngineComfy() (shared ComfyUI start path)
  *
- * Steps: install engine -> fetch SDXL-Lightning checkpoint (sha256-verified) ->
- * ComfyUI --cpu -> queue 1 prompt (512x512, 4 steps) -> wait for PNG ->
- * assert: file exists, dimensions 512x512, pixel variance > threshold
+ * Steps: install engine -> fetch SDXL-Lightning checkpoint (sha256-verified)
+ * into <root>/Models/image ONLY -> ComfyUI --cpu (via the shared path, so
+ * extra_model_paths must work or the test fails) -> assert the extra search
+ * path log line + loader preflight -> queue 1 prompt (512x512) -> wait for
+ * PNG -> assert: file exists, dimensions 512x512, pixel variance > threshold
  * (a black or solid-colour image fails).
  *
  * PNG decode is dependency-free (node:zlib + a minimal unfilter implementation).
@@ -154,11 +155,14 @@ async function main() {
   if (!inst.ok) throw new Error(`engine install failed: ${inst.why} — ${inst.whatNext}`);
 
   // 2. Checkpoint — manifest data (URL + sha256 from main/catalog.js), verified download.
-  // (In the app this goes through downloads.addManifestJob; in CI we use a plain
-  // verified fetch — same bytes, same hash gate.)
+  // WO-41.4: the checkpoint lives ONLY where the app puts it: <root>/Models/image
+  // (the catalog destination for image-studio). It must NOT be copied into
+  // ComfyUI/models/checkpoints — that bypass is exactly what hid the
+  // extra_model_paths bug from this test until now. ComfyUI sees the model
+  // only through --extra-model-paths-config (see step 3).
   const https = require('https');
   const crypto = require('crypto');
-  const ckptDir = path.join(engine.engineRoot(ROOT), 'ComfyUI', 'models', 'checkpoints');
+  const ckptDir = path.join(ROOT, 'Models', 'image');
   fs.mkdirSync(ckptDir, { recursive: true });
   const ckptDest = path.join(ckptDir, 'sdxl_lightning_4step.safetensors');
   const needDl = !fs.existsSync(ckptDest) || sha256File(ckptDest) !== CKPT_SHA256;
@@ -170,18 +174,15 @@ async function main() {
     log('checkpoint verified');
   } else log('checkpoint already verified on disk');
 
-  // 3. Boot ComfyUI with the engine venv python.
-  // (WO-21 comfy.js patch makes start() pass --cpu + --extra-model-paths-config;
-  // until then this driver documents the intended call.)
-  const { ComfyManager } = require('../main/comfy.js');
-  const { sdxlTxt2Img } = require('../main/comfy-workflows.js');
+  // 3. Boot ComfyUI through the SAME shared path the app uses
+  // (WO-41: createEngineComfy — yaml + --extra-model-paths-config + port).
+  const { createEngineComfy } = require('../main/comfy.js');
+  const { sdxlLightningTxt2Img } = require('../main/comfy-workflows.js');
   const comfyLog = [];
-  const mgr = new ComfyManager({
+  const mgr = createEngineComfy({
     root: ROOT,
-    pythonExe: engine.venvPython(ROOT),
-    comfyDir: path.join(engine.engineRoot(ROOT), 'ComfyUI'),
     cpu: true, // CI runners have no NVIDIA GPU
-    onEvent: (t, e) => { if (t === 'log' && e && e.line) { comfyLog.push(e.line); if (comfyLog.length > 40) comfyLog.shift(); } },
+    onEvent: (t, e) => { if (t === 'log' && e && e.line) comfyLog.push(e.line); },
   });
   const st = await mgr.start();
   if (!st.ok) {
@@ -189,12 +190,30 @@ async function main() {
     for (const l of comfyLog.slice(-15)) log('  | ' + l);
     throw new Error('ComfyUI failed to start: ' + st.error);
   }
+  // WO-41.4: this test must now CATCH the bug that slipped through before.
+  // (a) ComfyUI's own log must show the extra search path into Models/image.
+  // (b) The checkpoint must NOT exist under ComfyUI/models/checkpoints.
+  const comfyLogFile = path.join(engine.engineRoot(ROOT), 'comfyui.log');
+  let comfyLogText = '';
+  try { comfyLogText = fs.readFileSync(comfyLogFile, 'utf8'); } catch {}
+  const extraPathLine = [...comfyLog, ...comfyLogText.split(/\r?\n/)].find((l) => /Adding extra search path checkpoints/i.test(l));
+  if (!extraPathLine) throw new Error('ComfyUI log has no "Adding extra search path checkpoints" line — extra_model_paths is not wired (WO-41 bug)');
+  if (!/Models/.test(extraPathLine) || !/image/.test(extraPathLine)) throw new Error(`extra search path line does not point at Models/image: ${extraPathLine}`);
+  log('extra search path:', extraPathLine.trim());
+  const bypassCkpt = path.join(engine.engineRoot(ROOT), 'ComfyUI', 'models', 'checkpoints', 'sdxl_lightning_4step.safetensors');
+  if (fs.existsSync(bypassCkpt)) throw new Error('checkpoint found under ComfyUI/models/checkpoints — the test must not bypass extra_model_paths');
+  // (c) The loader itself must list the model (the preflight the app runs).
+  const pre = await mgr.getCheckpointList();
+  if (!pre.ok || !pre.checkpoints.includes('sdxl_lightning_4step.safetensors')) {
+    throw new Error(`CheckpointLoaderSimple does not list the model (preflight: ${JSON.stringify(pre)})`);
+  }
+  log('preflight: model visible to CheckpointLoaderSimple');
 
-  // 4. Queue the REAL workflow: 1 prompt, 512x512, 4 steps.
-  const wf = sdxlTxt2Img({
+  // 4. Queue the REAL workflow: the shared Lightning workflow, 512x512.
+  const wf = sdxlLightningTxt2Img({
     checkpoint: 'sdxl_lightning_4step.safetensors',
     positive: PROMPT, negative: '',
-    width: 512, height: 512, steps: 4, cfg: 1,
+    width: 512, height: 512,
   });
   const q = await mgr.queuePrompt(wf);
   if (!q.ok) throw new Error('queuePrompt failed: ' + (q.error || 'unknown'));

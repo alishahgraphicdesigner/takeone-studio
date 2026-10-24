@@ -664,6 +664,28 @@ async function engineReady(root) {
   try { await fsp.access(comfyDir(root)); return true; } catch { return false; }
 }
 
+/**
+ * WO-41: one readiness fact for every surface (diagnostics header, Engine
+ * section, Studio step readiness). engineReady() is the boolean; this is
+ * the same check plus the parts, so no surface can invent its own answer.
+ * Note the old diagnostics header read state.installed — a field that never
+ * existed (state carries `ready`, wheels is an OBJECT) — so it always said
+ * "not installed" even with a running engine. That bug dies here.
+ */
+async function engineReadiness(root) {
+  const st = await readEngineState(root).catch(() => null);
+  const venvPresent = await venvExists(root);
+  let comfyPresent = false;
+  try { await fsp.access(comfyDir(root)); comfyPresent = true; } catch { /* missing */ }
+  const stateReady = !!(st && st.ready);
+  return {
+    ready: stateReady && venvPresent && comfyPresent,
+    stateReady, venvPresent, comfyPresent,
+    wheelsCount: st && st.wheels ? Object.keys(st.wheels).length : 0,
+    pythonVersion: st && st.python && st.python.version ? st.python.version : null,
+  };
+}
+
 /** Throw a plain-words error when the engine is not ready (comfy.js uses this).
  *  WO-38: async. */
 async function assertEngineReady(root) {
@@ -735,7 +757,7 @@ module.exports = {
   checkDiskSpace, checkGpu, shippedPythonVersion,
   // install
   installEngine, ensureEngine, installTool, engineReady, venvExists,
-  assertEngineReady, writeModelPaths,
+  assertEngineReady, writeModelPaths, engineReadiness,
   // cancel
   newCancelToken, cancelEngineInstall,
   // constants (tests + CI)

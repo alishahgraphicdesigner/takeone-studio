@@ -128,6 +128,18 @@
       const ts = await window.takeone.toolStates(root);
       if (ts.ok) toolStates = ts.states || {};
     } catch {}
+    // WO-41.5: the Image step does NOT re-derive readiness from the file
+    // badge — it uses imageStepReady (engineReady && image-studio
+    // installed), the same fact the Models badge + engine chain rest on.
+    // A missing engine therefore reads as "Engine not ready", never as
+    // "Needs a tool" next to an "Installed" badge.
+    let imageReady = null;
+    try {
+      if (window.takeone.imageStepReady) {
+        const ir = await window.takeone.imageStepReady(root);
+        if (ir && ir.ok) imageReady = ir;
+      }
+    } catch {}
     let CAT = [];
     try { const c = await window.takeone.catalog(); if (c && c.ok) CAT = c.catalog || []; } catch {}
     const preview = '<div class="pipe-preview">' + steps.map((s, i) => {
@@ -136,7 +148,11 @@
       const readyTool = toolInfos.find((x) => x.st.state === 'installed');
       const readyName = readyTool ? (CAT.find((t) => t.id === readyTool.id) || {}).friendlyName : null;
       let badge;
-      if (ids.length === 0) {
+      if (i === 1 && imageReady) {
+        if (imageReady.ready) badge = '<span class="pp-ready">Ready — Image Studio</span>';
+        else if (imageReady.modelInstalled) badge = '<span class="pp-warn" data-goto="models">Engine not ready — install it in Models</span>';
+        else badge = '<span class="pp-missing" data-goto="models">Needs a tool — get it</span>';
+      } else if (ids.length === 0) {
         badge = '<span class="pp-ready">Ready — built in</span>';
       } else if (readyName) {
         badge = `<span class="pp-ready">Ready — ${esc(readyName)}</span>`;
@@ -182,7 +198,7 @@
       </div>`;
     const goTools = $('#npTools');
     if (goTools) goTools.addEventListener('click', () => switchView('models'));
-    document.querySelectorAll('.pp-missing').forEach((b) =>
+    document.querySelectorAll('.pp-missing, .pp-warn').forEach((b) =>
       b.addEventListener('click', () => switchView('models')));
     $('#npCreate').addEventListener('click', newProjectDialog);
     const qgBtn = $('#qgBtn');
@@ -227,6 +243,13 @@
             if (out) out.innerHTML = '<span>The AI engine isn\u2019t installed yet — it\u2019s a one-time setup.</span><br><button class="btn small" id="qgInstallEngine">Install the engine</button>';
             const ib = document.getElementById('qgInstallEngine');
             if (ib) ib.addEventListener('click', () => switchView('models'));
+          } else if (r.modelNotVisible) {
+            // WO-41.3: plain words + an action. The error text is plain by
+            // construction (main.js strips the raw ComfyUI JSON) — it is
+            // shown escaped, never as raw JSON.
+            if (out) out.innerHTML = `<span>${esc(r.error)}</span><br><button class="btn small" id="qgModels">Open Models</button>`;
+            const mb = document.getElementById('qgModels');
+            if (mb) mb.addEventListener('click', () => switchView('models'));
           } else if (out) out.textContent = 'Error: ' + (r.error || r.reason || 'failed');
           return;
         }

@@ -14,21 +14,123 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const fsp = fs.promises;
 const http = require('http');
 
 const COMFY_PORT = 8188;
 const START_TIMEOUT_MS = 300000; // 5 min: CPU boot on a slow CI runner (torch import alone can take minutes)
 
+/** WO-41: the plain message when ComfyUI cannot see the Image Studio model. */
+const MODEL_NOT_VISIBLE_MSG = "Image Studio's model isn't visible to the engine. Open Models and tap Check again.";
+
+/** App-log line sink: main.js defines global.__takeoneLog; plain-node use (e2e/tests) has none. */
+function logToApp(line) {
+  try { if (global.__takeoneLog) global.__takeoneLog(line); } catch { /* logging never breaks boot */ }
+}
+
+/**
+ * WO-41: pure ComfyUI argv builder (unit-testable — no spawn, no side effects).
+ * helpOut is `main.py --help` output ('' when unknown). --disable-api-nodes is
+ * only added when main.py --help actually lists it (ComfyUI versions differ).
+ * --extra-model-paths-config is what makes ComfyUI see <root>/Models/image:
+ * without it, CheckpointLoaderSimple only sees ComfyUI/models/checkpoints
+ * (empty on a fresh TakeOne install) and every generate fails with
+ * "Value not in list: ckpt_name ... not in []". Always binds 127.0.0.1.
+ */
+function buildComfyArgs({ mainPy, port, cpu, modelPathsConfig, helpOut }) {
+  const args = [mainPy, '--port', String(port), '--listen', '127.0.0.1', '--disable-auto-launch'];
+  if (cpu) args.push('--cpu');
+  if (modelPathsConfig) args.push('--extra-model-paths-config', modelPathsConfig);
+  if (helpOut && helpOut.includes('--disable-api-nodes')) args.push('--disable-api-nodes');
+  return args;
+}
+
+/**
+ * WO-41: map a ComfyUI /prompt failure to plain words. NEVER returns raw JSON:
+ * the renderer shows only `plain`; the full body goes to the app log via the
+ * caller's rawError handling (see queuePrompt + main.js comfyGenerate).
+ * A ckpt_name "Value not in list" error maps to MODEL_NOT_VISIBLE_MSG.
+ */
+function mapComfyError(status, body) {
+  const raw = String(body || '');
+  let parsed = null;
+  try { parsed = JSON.parse(raw); } catch { /* not JSON — generic message below */ }
+  const nodeErrors = parsed && parsed.node_errors;
+  if (nodeErrors && typeof nodeErrors === 'object') {
+    const entries = Object.entries(nodeErrors);
+    for (const [, ne] of entries) {
+      const errs = (ne && ne.errors) || [];
+      for (const er of errs) {
+        const text = String(((er && er.message) || '') + ' ' + ((er && er.details) || ''));
+        if (/ckpt_name/i.test(text)) {
+          return { plain: MODEL_NOT_VISIBLE_MSG, modelNotVisible: true };
+        }
+      }
+    }
+    for (const [id, ne] of entries) {
+      const errs = (ne && ne.errors) || [];
+      if (errs.length) {
+        const m = String(errs[0].message || errs[0].details || 'failed').replace(/\s+/g, ' ').trim();
+        return { plain: `ComfyUI couldn't run this prompt (node ${id}: ${m}).`, modelNotVisible: false };
+      }
+    }
+  }
+  if (parsed && parsed.error && parsed.error.message) {
+    return { plain: `ComfyUI couldn't run this prompt: ${String(parsed.error.message).replace(/\s+/g, ' ').trim()}`, modelNotVisible: false };
+  }
+  return { plain: `ComfyUI returned an error (HTTP ${status || 'unknown'}). Try again — if it repeats, check the engine log in Diagnostics.`, modelNotVisible: false };
+}
+
+/**
+ * WO-41: the ONE way the app and e2e-image.js start ComfyUI. Resolves the
+ * engine venv python + ComfyUI dir (legacy shipped-python fallback when the
+ * venv python is missing — the WO-23 fallback getComfy used), and always
+ * enables the extra_model_paths write so start() passes the config flag.
+ * Callers still call mgr.start() themselves (port picking + ready polling).
+ */
+function createEngineComfy({ root, cpu, onEvent }) {
+  const engine = require('./engine.js');
+  let pythonExe, comfyDir;
+  try {
+    pythonExe = engine.venvPython(root);
+    comfyDir = engine.comfyDir(root);
+    if (!fs.existsSync(pythonExe)) throw new Error('venv python missing');
+  } catch {
+    const { pythonExe: legacyPythonExe } = require('./deps.js');
+    pythonExe = legacyPythonExe(root);
+    comfyDir = path.join(root, 'ComfyUI');
+  }
+  return new ComfyManager({ root, pythonExe, comfyDir, cpu: !!cpu, modelPaths: true, onEvent });
+}
+
 class ComfyManager {
-  constructor({ root, pythonExe, comfyDir, onEvent, cpu }) {
+  constructor({ root, pythonExe, comfyDir, onEvent, cpu, modelPaths }) {
     this.root = root;
     this.pythonExe = pythonExe;
     this.comfyDir = comfyDir;
     this.onEvent = onEvent || (() => {});
     this.cpu = !!cpu; // e2e CI has no NVIDIA GPU — ComfyUI must boot with --cpu
+    this.modelPaths = !!modelPaths; // WO-41: write extra_model_paths.yaml + pass --extra-model-paths-config
+    this.modelPathsConfig = null;
     this.proc = null;
     this.port = COMFY_PORT;
     this.ready = false;
+  }
+
+  /** WO-41: (re)write extra_model_paths.yaml idempotently, every start. Returns the config path or null. */
+  async _ensureModelPaths() {
+    if (!this.modelPaths) return null;
+    try {
+      const engine = require('./engine.js');
+      await fsp.mkdir(engine.engineRoot(this.root), { recursive: true });
+      await engine.writeModelPaths(this.root);
+      const cfg = engine.modelPathsFile(this.root);
+      await fsp.access(cfg);
+      return cfg;
+    } catch (e) {
+      this.onEvent('log', { line: 'extra_model_paths.yaml not written: ' + String(e && e.message || e) });
+      return null;
+    }
   }
 
   /** Start ComfyUI. Resolves when /system_stats responds. */
@@ -45,9 +147,17 @@ class ComfyManager {
 
     return new Promise((resolve) => {
       const done0 = (r) => resolve(r);
-      this._pickPort().then((port) => {
+      this._pickPort().then(async (port) => {
         this.port = port;
+        // WO-41: yaml first (idempotent), then argv — the config flag is
+        // what makes ComfyUI print "Adding extra search path checkpoints
+        // <root>\Models\image" at boot. Without it, generation fails.
+        this.modelPathsConfig = await this._ensureModelPaths();
         this._comfyArgs(mainPy).then((args) => {
+          const argvLine = 'ComfyUI argv: ' + [this.pythonExe, ...args].join(' ');
+          logToApp(argvLine);
+          this.onEvent('log', { line: argvLine });
+          try { require('./diagnostics.js').appendComfyLog(this.root, argvLine); } catch {}
           this.proc = spawn(this.pythonExe, args, {
             cwd: this.comfyDir,
             windowsHide: true,
@@ -75,14 +185,14 @@ class ComfyManager {
   }
 
   /**
-   * Amendment 8: build the ComfyUI argv. --disable-api-nodes is only added when
-   * main.py --help actually lists it (ComfyUI versions differ); the --help
-   * output is appended to the ComfyUI log so the choice is auditable.
-   * Always binds to 127.0.0.1 (never 0.0.0.0).
+   * Amendment 8: build the ComfyUI argv via buildComfyArgs (pure, tested).
+   * --disable-api-nodes is only added when main.py --help actually lists it
+   * (ComfyUI versions differ); the --help output is appended to the ComfyUI
+   * log so the choice is auditable. NOTE (WO-42, P2, not this WO):
+   * --disable-api-nodes is deprecated upstream in favour of --offline /
+   * --disable-partner-nodes — that switch is parked for WO-42.
    */
   async _comfyArgs(mainPy) {
-    const args = [mainPy, '--port', String(this.port), '--listen', '127.0.0.1', '--disable-auto-launch'];
-    if (this.cpu) args.push('--cpu');
     let helpOut = '';
     try {
       helpOut = await new Promise((resolve) => {
@@ -96,8 +206,10 @@ class ComfyManager {
       });
     } catch { /* fall through without the flag */ }
     if (helpOut) this.onEvent('log', { line: 'main.py --help captured (' + helpOut.length + ' chars)' });
-    if (helpOut && helpOut.includes('--disable-api-nodes')) args.push('--disable-api-nodes');
-    return args;
+    return buildComfyArgs({
+      mainPy, port: this.port, cpu: this.cpu,
+      modelPathsConfig: this.modelPathsConfig, helpOut,
+    });
   }
 
   /** Shared ready-signal path (stdout or stderr): poll /system_stats, then settle. */
@@ -189,8 +301,17 @@ class ComfyManager {
         let out = '';
         res.on('data', (c) => { out += c; });
         res.on('end', () => {
-          if (res.statusCode === 200) resolve(JSON.parse(out));
-          else reject(new Error(`HTTP ${res.statusCode}: ${out.slice(0, 200)}`));
+          if (res.statusCode === 200) {
+            try { resolve(JSON.parse(out)); }
+            catch (e) { reject(e); }
+          } else {
+            // WO-41: carry status + full body so the caller can map it to
+            // plain words. The raw body NEVER reaches the renderer — main.js
+            // logs it to the app log and strips it before replying.
+            const e = new Error(`HTTP ${res.statusCode}`);
+            e.status = res.statusCode; e.body = out;
+            reject(e);
+          }
         });
       });
       req.on('error', reject);
@@ -200,14 +321,32 @@ class ComfyManager {
     });
   }
 
-  /** Queue a workflow. Returns { prompt_id }. */
+  /** WO-41: what CheckpointLoaderSimple can actually see (preflight). */
+  async getCheckpointList() {
+    if (!this.ready) return { ok: false, error: 'ComfyUI is not running.' };
+    try {
+      const info = await this._get('/object_info/CheckpointLoaderSimple');
+      const list = info && info.CheckpointLoaderSimple && info.CheckpointLoaderSimple.input
+        && info.CheckpointLoaderSimple.input.required && info.CheckpointLoaderSimple.input.required.ckpt_name
+        && info.CheckpointLoaderSimple.input.required.ckpt_name[0];
+      return { ok: true, checkpoints: Array.isArray(list) ? list : [] };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  /** Queue a workflow. Returns { prompt_id } on success, or plain-words { error } — never raw JSON. */
   async queuePrompt(workflow) {
     if (!this.ready) return { ok: false, error: 'ComfyUI is not running.' };
     try {
       const r = await this._post('/prompt', { prompt: workflow });
       return { ok: true, promptId: r.prompt_id, port: this.port };
     } catch (e) {
-      return { ok: false, error: `Could not queue: ${e.message}` };
+      const m = mapComfyError(e && e.status, e && e.body);
+      return {
+        ok: false, error: m.plain, modelNotVisible: m.modelNotVisible,
+        rawError: e && e.body ? String(e.body).slice(0, 8000) : String((e && e.message) || e),
+      };
     }
   }
 
@@ -251,4 +390,4 @@ class ComfyManager {
   isRunning() { return this.ready && !!this.proc; }
 }
 
-module.exports = { ComfyManager, COMFY_PORT };
+module.exports = { ComfyManager, COMFY_PORT, buildComfyArgs, mapComfyError, createEngineComfy, MODEL_NOT_VISIBLE_MSG };

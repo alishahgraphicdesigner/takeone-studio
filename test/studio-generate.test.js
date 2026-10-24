@@ -123,7 +123,11 @@ describe('WO-27: Studio generate flow vs mock ComfyUI', () => {
       const mgr = attachedManager();
       const q = await mgr.queuePrompt({ fake: 'workflow' });
       assert.equal(q.ok, false, 'queue fails when the server is gone');
-      assert.match(q.error, /Could not queue/);
+      // WO-41: queue errors are plain words now ("Could not queue: HTTP..."
+      // carried the raw failure); the structural assertion — ok:false, no
+      // throw — is unchanged, and the message must still be plain, not JSON.
+      assert.match(q.error, /ComfyUI returned an error/);
+      assert.ok(!q.error.includes('{'), 'no raw JSON in the error: ' + q.error);
       const h = await mgr.getHistory('mock-prompt-1');
       assert.equal(h.ok, false, 'history fails when the server is gone');
     } finally {

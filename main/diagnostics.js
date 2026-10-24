@@ -21,6 +21,13 @@ const LOG_TAIL_LINES = 100;
 const COMFY_LOG_MAX_BYTES = 512 * 1024; // rotate: keep the last half when exceeded
 const GPU_QUERY_TIMEOUT_MS = 5000; // WO-35: never block the UI on nvidia-smi
 
+/** WO-41: strip ANSI colour codes (ComfyUI logs colour). CSI + OSC sequences. */
+function stripAnsi(s) {
+  return String(s == null ? '' : s)
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')
+    .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '');
+}
+
 /** Mask the user name out of paths: C:\Users\<name>\ -> C:\Users\...\ (all platforms). */
 function maskUserName(s) {
   return String(s == null ? '' : s)
@@ -101,7 +108,8 @@ function appendComfyLog(root, line) {
         fs.writeFileSync(p, cut >= 0 ? keep.slice(cut + 1) : keep, 'utf8');
       }
     } catch { /* first write */ }
-    fs.appendFileSync(p, String(line).replace(/\r?\n$/, '') + '\n', 'utf8');
+    // WO-41: the stored ComfyUI log is colour-free, so the report never shows raw escapes.
+    fs.appendFileSync(p, stripAnsi(String(line)).replace(/\r?\n$/, '') + '\n', 'utf8');
   } catch { /* logging must never break generation */ }
 }
 
@@ -119,8 +127,11 @@ async function queryDefenderBlocks(runExec) {
     });
   }));
   try {
+    // WO-41: event 1123's properties carry Process Name AND Path — the old
+    // code read only Properties[0] (one value, often just a provider name).
+    // Join ALL property values so both the process and the path survive.
     const ps = `Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Windows Defender/Operational'; Id=1123} -MaxEvents 5 -ErrorAction SilentlyContinue | ` +
-      `ForEach-Object { $_.TimeCreated.ToString('o') + '|' + ($_.Properties[0].Value) }`;
+      `ForEach-Object { $_.TimeCreated.ToString('o') + '|' + (($_.Properties | ForEach-Object { $_.Value }) -join ' | ') }`;
     const r = await Promise.race([
       exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps]),
       new Promise((resolve) => setTimeout(() => resolve({ timeout: true }), 5000)),
@@ -243,8 +254,56 @@ function previousSessionSection(logPath) {
 }
 
 /**
+ * WO-41: ComfyUI's CheckpointLoaderSimple list via /object_info (best-effort,
+ * 5 s). Returns an array, or null when ComfyUI is not reachable. `httpGet`
+ * is injectable for tests (defaults to a real 127.0.0.1 GET).
+ */
+async function queryComfyCheckpoints(port, httpGet) {
+  const get = httpGet || ((p) => new Promise((resolve, reject) => {
+    const http = require('http');
+    const req = http.get(`http://127.0.0.1:${port}${p}`, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => {
+        if (res.statusCode === 200) { try { resolve(JSON.parse(data)); } catch (e) { reject(e); } }
+        else reject(new Error(`HTTP ${res.statusCode}`));
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(5000, () => { req.destroy(); reject(new Error('timeout')); });
+  }));
+  try {
+    const info = await get('/object_info/CheckpointLoaderSimple');
+    const list = info && info.CheckpointLoaderSimple && info.CheckpointLoaderSimple.input
+      && info.CheckpointLoaderSimple.input.required && info.CheckpointLoaderSimple.input.required.ckpt_name
+      && info.CheckpointLoaderSimple.input.required.ckpt_name[0];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return null;
+  }
+}
+
+/** WO-41: files in <root>/Models/image as "name (size)" lines (max 20 + overflow). */
+function listModelFiles(root, over) {
+  if (over !== undefined) return over;
+  const dir = path.join(root, 'Models', 'image');
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return ['(Models\\image folder not found)']; }
+  const fmt = (b) => b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : Math.max(1, Math.round(b / 1048576)) + ' MB';
+  const rows = [];
+  for (const n of names.sort().slice(0, 20)) {
+    try { rows.push(`${n} (${fmt(fs.statSync(path.join(dir, n)).size)})`); }
+    catch { rows.push(`${n} (unreadable)`); }
+  }
+  if (names.length > 20) rows.push(`... and ${names.length - 20} more`);
+  return rows.length ? rows : ['(no files)'];
+}
+
+/**
  * WO-36: the Engine section of the diagnostics report.
- * `over` injects: engineState, security, shippedPythonVer.
+ * `over` injects: engineState, security, shippedPythonVer, engineReadiness,
+ * comfyCheckpoints (array, or null when ComfyUI unreachable), comfyPort,
+ * modelFiles.
  */
 async function engineSection(root, over = {}) {
   const engine = require('./engine.js');
@@ -272,6 +331,24 @@ async function engineSection(root, over = {}) {
   const sec = over.security !== undefined ? over.security : await querySecurity(over.securityExec);
   lines.push(`Controlled Folder Access: ${sec.controlledFolderAccess}`);
   lines.push(`Defender real-time protection: ${sec.defenderRealTime}`);
+  // WO-41: readiness truth (same engineReadiness the header uses) + what
+  // ComfyUI can actually see + what is on disk. A model file on disk that
+  // ComfyUI cannot see is exactly the WO-41 bug — this section makes the
+  // two lists comparable at a glance.
+  const readiness = over.engineReadiness !== undefined ? over.engineReadiness
+    : await engine.engineReadiness(root).catch(() => null);
+  if (readiness) {
+    lines.push(`Ready: ${readiness.ready ? 'YES' : 'NO'} (state ready=${readiness.stateReady}, venv=${readiness.venvPresent ? 'present' : 'missing'}, ComfyUI=${readiness.comfyPresent ? 'present' : 'missing'}, wheels=${readiness.wheelsCount})`);
+  }
+  let ckpts = over.comfyCheckpoints;
+  if (ckpts === undefined && over.comfyPort) ckpts = await queryComfyCheckpoints(over.comfyPort, over.comfyHttpGet);
+  if (Array.isArray(ckpts)) {
+    lines.push(`ComfyUI checkpoints (via /object_info): ${ckpts.length ? ckpts.join(', ') : '(none — the model list is empty)'}`);
+  } else {
+    lines.push('ComfyUI checkpoints (via /object_info): unavailable — ComfyUI is not running');
+  }
+  lines.push('Models\\image files:');
+  for (const f of listModelFiles(root, over.modelFiles)) lines.push('  ' + f);
   return lines.join('\n');
 }
 
@@ -296,14 +373,15 @@ async function buildDiagnosticsReport(root, over = {}) {
   });
   // WO-35: async — a missing or hung nvidia-smi resolves within 5 s, UI never blocks.
   const gpu = over.gpu !== undefined ? over.gpu : await queryGpu(over.gpuExec);
-  const engineSummary = over.engineSummary !== undefined ? over.engineSummary : await (async () => {
-    let st = null;
-    try { st = await engine.readEngineState(root); } catch {}
-    if (!st || !st.installed) return 'not installed';
-    const wheels = Array.isArray(st.wheels) ? st.wheels.length : 0;
-    const py = st.python && st.python.version ? `, python ${st.python.version}` : '';
-    return `installed (${wheels} wheels${py})`;
-  })();
+  // WO-41: the header tells the truth from engineReadiness (state.ready +
+  // venv + ComfyUI dir). The old header read state.installed — a field that
+  // never existed — so it always said "not installed" on a running engine.
+  const readiness = over.engineReadiness !== undefined ? over.engineReadiness
+    : await engine.engineReadiness(root).catch(() => null);
+  const engineSummary = over.engineSummary !== undefined ? over.engineSummary : !readiness ? 'unknown'
+    : readiness.ready
+      ? `ready (${readiness.wheelsCount} wheels${readiness.pythonVersion ? `, python ${readiness.pythonVersion}` : ''})`
+      : `not installed (state ready=${readiness.stateReady}, venv ${readiness.venvPresent ? 'present' : 'missing'}, ComfyUI ${readiness.comfyPresent ? 'present' : 'missing'})`;
   const disk = over.disk !== undefined ? over.disk : await (async () => {
     try {
       const c = await engine.checkDiskSpace(root);
@@ -313,11 +391,13 @@ async function buildDiagnosticsReport(root, over = {}) {
     }
   })();
   const appLog = d('appLog', () => sessionLogTail(path.join(os.tmpdir(), 'takeone-startup.log'), LOG_TAIL_LINES));
-  const comfyLog = d('comfyLog', () => tailFile(comfyLogPath(root), LOG_TAIL_LINES));
+  // WO-41: strip ANSI even from older stored logs (appendComfyLog strips new writes too).
+  const comfyLog = d('comfyLog', () => stripAnsi(tailFile(comfyLogPath(root), LOG_TAIL_LINES)));
   // WO-36: Engine section — lastError, root (masked later), OneDrive, shipped
   // python, venv presence, Controlled Folder Access + Defender status.
+  // WO-41: pass the header's readiness through so both agree by construction.
   const engSection = over.engineSection !== undefined ? over.engineSection
-    : await engineSection(root, over);
+    : await engineSection(root, { ...over, engineReadiness: readiness });
   // WO-38: previous session crash evidence ('' when clean / absent).
   const prevSession = over.prevSession !== undefined ? over.prevSession
     : previousSessionSection(path.join(os.tmpdir(), 'takeone-startup.log'));
@@ -350,12 +430,15 @@ async function buildDiagnosticsReport(root, over = {}) {
     '(user names in paths are masked; no passwords or keys are included)',
   ].join('\n');
 
-  return maskReport(report);
+  // WO-41: the report as a whole is ANSI-free by construction — no escape
+  // sequence survives, whichever source a line came from.
+  return maskReport(stripAnsi(report));
 }
 
 module.exports = {
-  buildDiagnosticsReport, maskReport, maskUserName, scrubSecrets,
+  buildDiagnosticsReport, maskReport, maskUserName, scrubSecrets, stripAnsi,
   tailFile, sessionLogTail, previousSessionSection, comfyLogPath, appendComfyLog, queryGpu,
-  querySecurity, queryDefenderBlocks, isOneDrivePath, engineSection, storageSection,
+  querySecurity, queryDefenderBlocks, queryComfyCheckpoints, listModelFiles,
+  isOneDrivePath, engineSection, storageSection,
   LOG_TAIL_LINES, GPU_QUERY_TIMEOUT_MS,
 };

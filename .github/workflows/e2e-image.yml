@@ -1,8 +1,11 @@
 name: e2e-image
 # WO-22 + WO-24: "Studio se asli output file" CI mein sabit karo (Windows runner, CPU).
 # Engine ko main/engine.js ki functions se install karta hai (WO-21 — wahi code
-# jo app chalayegi), Image Studio ka checkpoint manifest se, ComfyUI --cpu par
-# comfy-workflows.js ka asli sdxlTxt2Img workflow: 1 prompt, 512x512, 4 steps.
+# jo app chalayegi), Image Studio ka checkpoint manifest se <root>/Models/image
+# mein (WO-41.4: ComfyUI/models/checkpoints mein NAHI — warna extra_model_paths
+# ka bug is test se chhoot jata hai), ComfyUI --cpu par shared
+# createEngineComfy() start path se, comfy-workflows.js ka shared
+# sdxlLightningTxt2Img workflow: 1 prompt, 512x512.
 # Output PNG: file exist + 512x512 dimensions + pixel variance > threshold +
 # spatial correlation > 0.3 (noise nahi). PNG artifact upload hota hai.
 # TAKEONE_SKIP_GPU_CHECK=1: runner par NVIDIA GPU nahi (failure kinds unit-tested).
@@ -54,7 +57,7 @@ jobs:
             Write-Error "WO-21 IMPLEMENTATION PENDING: main/engine.js does not exist yet — only the design doc (round9/wo21/ENGINE-DESIGN.md) has been delivered. This workflow calls installEngine()/venvPython()/engineRoot() from that module, so it cannot proceed. Marking Failed honestly; it will run for real once the WO-21 implementation lands."
             exit 1
           }
-          node -e "const e = require('./main/engine.js'); for (const f of ['installEngine','engineRoot','venvPython','readEngineState']) { if (typeof e[f] !== 'function') { throw new Error('main/engine.js missing function: ' + f); } } console.log('engine.js API OK')"
+          node -e "const e = require('./main/engine.js'); for (const f of ['installEngine','engineRoot','venvPython','readEngineState']) { if (typeof e[f] !== 'function') { throw new Error('main/engine.js missing function: ' + f); } } const c = require('./main/comfy.js'); if (typeof c.createEngineComfy !== 'function') { throw new Error('main/comfy.js missing createEngineComfy (WO-41 shared start path)'); } console.log('engine.js + shared comfy start API OK')"
 
       - name: Run end-to-end image generation (CPU)
         env:

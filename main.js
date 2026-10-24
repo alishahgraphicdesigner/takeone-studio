@@ -213,6 +213,7 @@ module.exports = {
   STEPS: pipeMod.STEPS,  stepDef: pipeMod.stepDef,
   maskPersonalPath,
   projectThread: pipeMod.projectThread,
+  imageStepReady,
   resumeState: pipeMod.resumeState,
   analyzeScript: pipeMod.analyzeScript,
   addTasteRule: pipeMod.addTasteRule,
@@ -706,6 +707,23 @@ async function mergedToolStates(root) {
   return out;
 }
 
+/**
+ * WO-41.5: the ONE source of truth for "can the Studio Image step generate?".
+ * The Models page badge answers "is the file on disk?" (toolInstalled);
+ * the Studio step answers "can it run?" — engineReady AND image-studio
+ * installed. The old Studio preview reused only the file answer, so a
+ * missing engine read as "Needs a tool" next to an "Installed" badge.
+ * Callers must use this (not re-derive it) for step readiness.
+ */
+async function imageStepReady(root) {
+  const r = root;
+  const engine = require('./main/engine.js');
+  const engineReady = await engine.engineReady(r);
+  const tool = toolById('image-studio');
+  const modelInstalled = tool ? await toolInstalled(r, tool) : false;
+  return { engineReady, modelInstalled, ready: engineReady && modelInstalled };
+}
+
 /** Plain-words online check (DNS). Never throws. */
 function checkOnline() {
   return new Promise((resolve) => {
@@ -1031,29 +1049,18 @@ function wireIPC() {
   ipcMain.handle('takeone:checkOnline', async () => ({ online: await checkOnline() }));
 
   // ── ComfyUI engine (Phase D: real generation) ──
-  const { ComfyManager } = require('./main/comfy.js');
-  const { sdxlTxt2Img } = require('./main/comfy-workflows.js');
+  // WO-41: the app starts ComfyUI through createEngineComfy — the SAME
+  // function tools/e2e-image.js uses. The old getComfy built its own
+  // ComfyManager WITHOUT the extra_model_paths config, which is exactly
+  // why ComfyUI's checkpoint list was empty on Ali's PC.
+  const { createEngineComfy, MODEL_NOT_VISIBLE_MSG } = require('./main/comfy.js');
+  const { sdxlLightningTxt2Img } = require('./main/comfy-workflows.js');
   const engine = require('./main/engine.js');
   let comfyMgr = null;
   function getComfy(root) {
     if (!comfyMgr) {
-      // WO-23: when the engine is installed, ComfyUI runs on the engine venv's
-      // python with the engine's extra_model_paths; otherwise fall back to the
-      // legacy shipped-python path.
-      let pythonExe, comfyDir;
-      try {
-        engine.assertEngineReady(root);
-        pythonExe = engine.venvPython(root);
-        comfyDir = engine.comfyDir(root);
-      } catch {
-        const { pythonExe: legacyPythonExe } = require('./deps.js');
-        pythonExe = legacyPythonExe(root);
-        comfyDir = path.join(root, 'ComfyUI');
-      }
-      comfyMgr = new ComfyManager({
+      comfyMgr = createEngineComfy({
         root,
-        pythonExe,
-        comfyDir,
         onEvent: (type, data) => {
           if (studioWin && !studioWin.isDestroyed()) {
             studioWin.webContents.send('comfy-event', { type, ...data });
@@ -1111,10 +1118,23 @@ function wireIPC() {
   ipcMain.handle('takeone:diagnostics', async (e, root) => {
     try {
       const r = root || defaultRoot();
-      const report = await require('./main/diagnostics.js').buildDiagnosticsReport(r);
+      // WO-41: when ComfyUI is running, the Engine section lists its real
+      // checkpoint list from /object_info; otherwise it says unavailable.
+      const over = {};
+      if (comfyMgr && comfyMgr.isRunning()) over.comfyPort = comfyMgr.port;
+      const report = await require('./main/diagnostics.js').buildDiagnosticsReport(r, over);
       return { ok: true, report };
     } catch (err) {
       return { ok: false, reason: 'Could not build the diagnostics report.' };
+    }
+  });
+  // WO-41.5: single source of truth for Studio Image-step readiness.
+  ipcMain.handle('takeone:imageStepReady', async (e, root) => {
+    try {
+      const r = root || defaultRoot();
+      return { ok: true, ...(await imageStepReady(r)) };
+    } catch (err) {
+      return { ok: false, reason: String(err && err.message || err) };
     }
   });
   ipcMain.handle('takeone:comfyStart', async (e, root) => {
@@ -1132,8 +1152,10 @@ function wireIPC() {
     const r = root || defaultRoot();
     // WO-27: plain-words engine check BEFORE touching ComfyUI — the renderer
     // turns engineMissing into "Install the engine" guidance.
+    // WO-41: assertEngineReady is async — awaiting it (the old code called
+    // it without await, so the catch could never fire).
     try {
-      engine.assertEngineReady(r);
+      await engine.assertEngineReady(r);
     } catch (err) {
       return { ok: false, engineMissing: true, error: err.message };
     }
@@ -1142,16 +1164,40 @@ function wireIPC() {
       const st = await mgr.start();
       if (!st.ok) return st;
     }
-    // For now: SDXL text-to-image. More workflows as models land.
-    const workflow = sdxlTxt2Img({
-      checkpoint: params.checkpoint || 'sd_xl_base_1.0.safetensors',
+    // WO-41.2: NO hard-coded checkpoint. Quick Generate always uses the
+    // INSTALLED Image Studio model from the catalog (SDXL-Lightning), with
+    // the Lightning workflow from comfy-workflows.js. A caller-supplied
+    // checkpoint name is ignored — the UI offers no such choice.
+    const tool = toolById('image-studio');
+    if (!tool || !(await toolInstalled(r, tool))) {
+      return { ok: false, error: "Image Studio isn't installed yet. Open Models and download it.", action: 'models' };
+    }
+    const checkpoint = tool.fileName;
+    // WO-41.3: preflight — is the model visible to ComfyUI's loader? If the
+    // list comes back but the model is not in it, fail HERE in plain words
+    // instead of queueing a prompt ComfyUI will reject with a 400.
+    const pre = await mgr.getCheckpointList();
+    if (pre.ok && !pre.checkpoints.includes(checkpoint)) {
+      return { ok: false, modelNotVisible: true, error: MODEL_NOT_VISIBLE_MSG, action: 'models' };
+    }
+    // (Preflight failure itself is not fatal: queueing will surface a plain
+    // error if the model really is missing.)
+    const workflow = sdxlLightningTxt2Img({
+      checkpoint,
       positive: params.prompt || '',
       negative: params.negative || '',
       width: params.width || 1024,
       height: params.height || 1024,
-      steps: params.steps || 20,
     });
-    return mgr.queuePrompt(workflow);
+    const q = await mgr.queuePrompt(workflow);
+    if (!q.ok) {
+      // WO-41.3: the FULL raw error goes to the app log only. The renderer
+      // receives plain words — never raw JSON.
+      try { global.__takeoneLog && global.__takeoneLog('comfyGenerate raw error: ' + (q.rawError || q.error)); } catch {}
+      const { rawError, ...plain } = q;
+      return plain;
+    }
+    return q;
   });
   ipcMain.handle('takeone:comfyHistory', async (e, promptId) => {
     if (!comfyMgr) return { ok: false, error: 'Not running.' };
