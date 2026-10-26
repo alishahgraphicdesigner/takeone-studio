@@ -239,8 +239,13 @@ async function main() {
   const full = saved.path;
   log('output (Library):', full);
   log('dataUrl bytes:', saved.dataUrl.length, '| comfy file:', JSON.stringify(saved.comfyFile));
-  // Sidecar must exist next to the PNG and carry prompt + model.
-  const sidecarPath = full.replace(/\.png$/i, '.json');
+  // Sidecar must exist (M1: in images/.sidecars/, not next to the PNG,
+  // so the Library never shows it as a broken thumbnail) and carry prompt + model.
+  const sidecarPath = path.join(path.dirname(full), '.sidecars', path.basename(full).replace(/\.png$/i, '.json'));
+  // M1: the save must land in the real "Quick Generate" project.
+  if (!saved.projectId || !full.includes(`${path.sep}Projects${path.sep}`) || !full.includes(`${path.sep}images${path.sep}`)) {
+    throw new Error('saved path is not in the Quick Generate project images dir: ' + full);
+  }
   if (!fs.existsSync(sidecarPath)) throw new Error('sidecar JSON missing: ' + sidecarPath);
   const sidecar = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
   if (sidecar.prompt !== PROMPT || sidecar.model !== 'sdxl_lightning_4step.safetensors') {

@@ -94,7 +94,263 @@
     renderStepPanel();
     renderMoves();
     renderTools();
+    renderQuickGen();
   }
+
+  // M1: Quick Generate lives in the Studio view ALWAYS — not only in the
+  // no-project empty state. The UI audit caught it: with any project open,
+  // renderAll never rendered #quickGen, so the whole feature vanished.
+  // renderQuickGen appends the block once (guarded by #quickGen) and wires
+  // it; renderNoProject and renderAll both call it. Re-renders never
+  // duplicate it, and a wiped studioBody (empty hero) simply re-adds it.
+  function renderQuickGen() {
+    if (document.getElementById('quickGen')) return;
+    const host = $('#studioBody');
+    if (!host) return;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `<div class="quickgen" id="quickGen" style="margin-top:32px; padding:20px; border:1px solid var(--line); border-radius:12px; background:var(--panel);">
+      <h3 style="margin:0 0 8px;">⚡ Quick Generate <span class="muted small">(engine test)</span></h3>
+      <p class="muted small" style="margin:0 0 12px;">Test the local AI engine directly. Needs ComfyUI + an SDXL model in Models.</p>
+      <textarea id="qgPrompt" rows="1" placeholder="A cinematic sunset over mountains…" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:#fff; resize:none; overflow:hidden; font:inherit;"></textarea>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:12px 0;">
+        <label class="muted small">Preset <select id="qgPreset"><option value="fast">Fast</option><option value="quality">Quality</option></select></label>
+        <label class="muted small">Ratio <select id="qgAspect"><option value="1:1">1:1</option><option value="3:2">3:2</option><option value="16:9">16:9</option><option value="9:16">9:16</option></select></label>
+        <label class="muted small">Variations <select id="qgVars"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
+        <label class="muted small">Seed <input id="qgSeed" placeholder="Random" inputmode="numeric" style="width:90px; padding:6px 8px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:#fff;" /></label>
+        <button class="primary" id="qgBtn">Generate</button>
+        <button class="ghost" id="qgPackBtn">Run Ali pack (3 prompts × 3 settings, same seed)</button>
+      </div>
+      <p class="muted small" style="margin:0 0 12px;">Empty negative prompt? TakeOne adds a photoreal default (no blur, no bad anatomy, no text or watermark). Images land in the Library project “Quick Generate”, with thumbnails.</p>
+      <div id="qgOut" class="muted small"></div>
+    </div>`;
+    host.appendChild(wrap.firstElementChild);
+      // M1: auto-grow — the whole prompt stays visible, including a long
+      // pasted one (grows to its content, capped at 400px, then scrolls).
+      const qgPrompt = $('#qgPrompt');
+      const qgBtn = $('#qgBtn');
+      const qgAutoGrow = () => {
+        if (!qgPrompt) return;
+        qgPrompt.style.height = 'auto';
+        qgPrompt.style.height = Math.min(qgPrompt.scrollHeight, 400) + 'px';
+      };
+      if (qgPrompt) qgPrompt.addEventListener('input', qgAutoGrow);
+      let qgBusy = false;
+      if (qgPrompt) qgPrompt.addEventListener('input', async () => {
+        if (qgBusy) return;
+        const txt = (qgPrompt.value || '').toLowerCase();
+        const out = $('#qgOut');
+        if (txt.length < 3 || !out || out.querySelector('img')) return;
+        try {
+          // Simple keyword context
+          const ctx = txt.includes('cinematic') ? 'prompt:cinematic'
+            : txt.includes('portrait') ? 'prompt:portrait'
+            : txt.includes('landscape') ? 'prompt:landscape' : null;
+          if (!ctx) return;
+          const r = await window.takeone.brainSuggest(root, ctx, 2);
+          if (r.ok && r.suggestions.length && !out.querySelector('img')) {
+            const s = r.suggestions[0];
+            out.innerHTML = `<span class="muted">💡 Brain suggests: ${esc(s.action.replace('suggest:', ''))} (learned from your past)</span>`;
+          }
+        } catch { /* brain optional */ }
+      });
+      // M1: one card per generated image — Copy prompt / Open folder /
+      // Delete (Trash, 30 days). Cards append; status lives separately so a
+      // later generation never wipes earlier results.
+      function qgCard(f, promptText, metaLine) {
+        const cards = document.getElementById('qgCards');
+        if (!cards) return;
+        const el = document.createElement('div');
+        el.style.cssText = 'margin-top:12px; padding:12px; border:1px solid var(--line); border-radius:12px;';
+        el.innerHTML = `<img src="${esc(f.dataUrl)}" style="max-width:100%; border-radius:8px;" />` +
+          `<div style="margin-top:8px;"><b>Saved to Library</b> <span class="muted small">${esc(metaLine)} · ${esc(f.path)}</span></div>` +
+          `<div class="row" style="margin-top:8px;"><button class="btn small" data-act="copy">Copy prompt</button>` +
+          `<button class="btn small" data-act="folder">Open folder</button>` +
+          `<button class="btn small" data-act="del">Delete</button></div>`;
+        el.querySelector('[data-act="copy"]').addEventListener('click', async (ev) => {
+          const btn = ev.currentTarget;
+          try { await window.takeone.copyText(promptText); btn.textContent = 'Copied!'; }
+          catch { btn.textContent = 'Copy failed'; }
+          setTimeout(() => { btn.textContent = 'Copy prompt'; }, 2000);
+        });
+        el.querySelector('[data-act="folder"]').addEventListener('click', () => window.takeone.showInFolder(f.path));
+        el.querySelector('[data-act="del"]').addEventListener('click', async () => {
+          if (!confirm('Move this image to Trash? You can restore it within 30 days.')) return;
+          const dr = await window.takeone.deleteQuickImage(root, f.path);
+          if (!dr || !dr.ok) { alert((dr && dr.reason) || 'Could not delete.'); return; }
+          el.remove();
+        });
+        cards.appendChild(el);
+      }
+      // Poll MAIN for one promptId until saved / failed / cancelled.
+      // Returns the saved result, { __error } on a plain failure, or
+      // { __timeout: true } on timeout; null ONLY on cancel. statusEl is
+      // the TEXT span inside #qgStatus — writing it never wipes the Cancel
+      // button, which lives in its own sibling span.
+      async function qgPollOne(pid, promptText, cancelState, statusEl, label) {
+        for (let i = 0; i < 150; i++) {
+          await new Promise((res) => setTimeout(res, 5000));
+          if (cancelState.cancelled) return null;
+          const f = await window.takeone.comfyFetchOutput(root, pid, promptText);
+          if (f && f.ok) return f;
+          if (f && !f.notFinished) return { __error: f.error || 'failed' };
+          statusEl.textContent = `${label} ${Math.floor((i + 1) * 5 / 60)}m ${((i + 1) * 5) % 60}s`;
+        }
+        return { __timeout: true };
+      }
+      function qgStatus(out) {
+        out.innerHTML = '<div id="qgStatus"><span id="qgStatusText">Starting the engine…</span> <span id="qgStatusBtn"></span></div><div id="qgCards"></div>';
+        return document.getElementById('qgStatusText');
+      }
+      if (qgBtn) qgBtn.addEventListener('click', async () => {
+        const prompt = (qgPrompt || {}).value || '';
+        const out = $('#qgOut');
+        if (!prompt.trim()) { if (out) out.textContent = 'Pehle prompt likhein.'; return; }
+        try {
+          const low = prompt.toLowerCase();
+          const ctx = low.includes('cinematic') ? 'prompt:cinematic'
+            : low.includes('portrait') ? 'prompt:portrait'
+            : low.includes('landscape') ? 'prompt:landscape' : 'prompt:general';
+          await window.takeone.brainLearn(root, ctx, 'suggest:sdxl', 1);
+        } catch { /* brain optional */ }
+        qgBtn.disabled = true;
+        qgBusy = true;
+        const cancelState = { cancelled: false };
+        try {
+          const statusEl = qgStatus(out);
+          statusEl.textContent = 'Starting the engine…';
+          document.getElementById('qgStatusBtn').innerHTML = '<button class="btn small ghost2" id="qgCancel">Cancel</button>';
+          document.getElementById('qgCancel').addEventListener('click', async () => {
+            cancelState.cancelled = true;
+            try { await window.takeone.comfyInterrupt(); } catch { /* best effort */ }
+          });
+          const preset = ($('#qgPreset') || {}).value || 'fast';
+          const aspect = ($('#qgAspect') || {}).value || '1:1';
+          const variations = parseInt((($('#qgVars') || {}).value || '1'), 10) || 1;
+          const seedRaw = ((($('#qgSeed') || {}).value || '').trim());
+          const r = await window.takeone.comfyGenerate(root, { prompt: prompt.trim(), preset, aspect, variations, seed: seedRaw });
+          if (!r.ok) {
+            if (r.engineMissing) {
+              out.innerHTML = '<span>The AI engine isn\u2019t installed yet — it\u2019s a one-time setup.</span><br><button class="btn small" id="qgInstallEngine">Install the engine</button>';
+              document.getElementById('qgInstallEngine').addEventListener('click', () => switchView('models'));
+            } else if (r.modelNotVisible) {
+              out.innerHTML = `<span>${esc(r.error)}</span><br><button class="btn small" id="qgModels">Open Models</button>`;
+              document.getElementById('qgModels').addEventListener('click', () => switchView('models'));
+            } else out.textContent = 'Error: ' + (r.error || r.reason || 'failed');
+            return;
+          }
+          const pids = r.promptIds || [r.promptId];
+          let done = 0;
+          let firstError = null;
+          let timedOut = false;
+          for (let vi = 0; vi < pids.length; vi++) {
+            if (cancelState.cancelled) { statusEl.textContent = 'Cancelled.'; return; }
+            statusEl.textContent = `Generating… variation ${vi + 1}/${pids.length}`;
+            const f = await qgPollOne(pids[vi], prompt.trim(), cancelState, statusEl, `Generating… variation ${vi + 1}/${pids.length} —`);
+            if (cancelState.cancelled) { statusEl.textContent = 'Cancelled.'; return; }
+            if (!f) { statusEl.textContent = 'Cancelled.'; return; }
+            if (f.__error) { if (!firstError) firstError = f.__error; continue; }
+            if (f.__timeout) { timedOut = true; continue; }
+            done++;
+            qgCard(f, prompt.trim(), `${preset} · ${aspect} · seed ${r.seed + vi}`);
+          }
+          statusEl.textContent = done
+            ? `Done — ${done} image${done === 1 ? '' : 's'} saved to the Library project “Quick Generate”.`
+            : firstError ? 'Error: ' + firstError
+            : timedOut ? 'Timed out waiting for the engine.'
+            : 'Nothing saved.';
+        } catch (e) {
+          if (out) out.textContent = 'Error: ' + (e.message || e);
+        } finally {
+          qgBtn.disabled = false;
+          qgBusy = false;
+        }
+      });
+      // M1: the Ali pack — 3 prompts × 3 settings, one seed. After all 9,
+      // the renderer draws the 3×3 contact sheet on a canvas and saves it
+      // into the Quick Generate project (main writes the file).
+      const qgPackBtn = $('#qgPackBtn');
+      if (qgPackBtn) qgPackBtn.addEventListener('click', async () => {
+        const out = $('#qgOut');
+        qgPackBtn.disabled = true;
+        qgBusy = true;
+        const cancelState = { cancelled: false };
+        try {
+          const statusEl = qgStatus(out);
+          statusEl.textContent = 'Starting the engine for the Ali pack…';
+          document.getElementById('qgStatusBtn').innerHTML = '<button class="btn small ghost2" id="qgPackCancel">Cancel</button>';
+          document.getElementById('qgPackCancel').addEventListener('click', async () => {
+            cancelState.cancelled = true;
+            try { await window.takeone.comfyInterrupt(); } catch { /* best effort */ }
+          });
+          const seedRaw = ((($('#qgSeed') || {}).value || '').trim());
+          const r = await window.takeone.comfyGeneratePack(root, { seed: seedRaw });
+          if (!r.ok) {
+            if (r.engineMissing) out.textContent = 'The AI engine isn\u2019t installed yet — it\u2019s a one-time setup.';
+            else if (r.modelNotVisible) out.textContent = r.error;
+            else out.textContent = 'Error: ' + (r.error || r.reason || 'failed');
+            return;
+          }
+          statusEl.textContent = `Ali pack queued — 9 images, one seed (${r.seed}). This takes a few minutes.`;
+          const results = [];
+          for (let ji = 0; ji < r.jobs.length; ji++) {
+            const job = r.jobs[ji];
+            if (cancelState.cancelled) { statusEl.textContent = 'Cancelled.'; return; }
+            const f = await qgPollOne(job.promptId, job.prompt, cancelState, statusEl, `Ali pack ${ji + 1}/9 —`);
+            if (cancelState.cancelled) { statusEl.textContent = 'Cancelled.'; return; }
+            results.push(f ? { ...job, dataUrl: f.dataUrl, path: f.path } : { ...job, dataUrl: null });
+            statusEl.textContent = `Ali pack: ${ji + 1}/9 done.`;
+          }
+          // Draw the 3×3 sheet (3 prompts as rows, 3 settings as columns).
+          const CELL = 448;
+          const canvas = document.createElement('canvas');
+          canvas.width = CELL * 3; canvas.height = CELL * 3;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#111'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+          for (let i = 0; i < 9; i++) {
+            const res = results[i];
+            const cx = (i % 3) * CELL, cy = Math.floor(i / 3) * CELL;
+            if (res.dataUrl) {
+              const img = new Image();
+              img.src = res.dataUrl;
+              try { await img.decode(); } catch { /* draw anyway */ }
+              const scale = Math.max(CELL / img.naturalWidth, CELL / img.naturalHeight);
+              const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
+              ctx.drawImage(img, cx + (CELL - dw) / 2, cy + (CELL - dh) / 2, dw, dh);
+            } else {
+              ctx.fillStyle = '#333'; ctx.fillRect(cx, cy, CELL, CELL);
+              ctx.fillStyle = '#999'; ctx.font = '24px sans-serif';
+              ctx.fillText('failed', cx + 20, cy + 40);
+            }
+            ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(cx, cy + CELL - 28, CELL, 28);
+            ctx.fillStyle = '#fff'; ctx.font = '16px sans-serif';
+            ctx.fillText(`${res.preset} ${res.aspect}`, cx + 8, cy + CELL - 8);
+          }
+          const sheetUrl = canvas.toDataURL('image/png');
+          const sr = await window.takeone.saveContactSheet(root, sheetUrl);
+          const cards = document.getElementById('qgCards');
+          if (cards) {
+            const el = document.createElement('div');
+            el.style.cssText = 'margin-top:12px; padding:12px; border:1px solid var(--line); border-radius:12px;';
+            el.innerHTML = `<img src="${esc(sheetUrl)}" style="max-width:100%; border-radius:8px;" />` +
+              `<div style="margin-top:8px;"><b>Ali pack contact sheet</b> <span class="muted small">${sr && sr.ok ? esc(sr.path) : 'could not be saved — the sheet above is still yours to screenshot'}</span></div>` +
+              (sr && sr.ok ? `<button class="btn small" id="qgSheetFolder">Open folder</button>` : '');
+            cards.appendChild(el);
+            const sf = document.getElementById('qgSheetFolder');
+            if (sf) sf.addEventListener('click', () => window.takeone.showInFolder(sr.path));
+          }
+          const failed = results.filter((x) => !x.dataUrl).length;
+          statusEl.textContent = failed
+            ? `Ali pack done — ${9 - failed}/9 saved. ${failed} failed (plain errors were shown while polling).`
+            : 'Ali pack done — 9/9 saved to the Library project “Quick Generate”.';
+        } catch (e) {
+          if (out) out.textContent = 'Error: ' + (e.message || e);
+        } finally {
+          qgPackBtn.disabled = false;
+          qgBusy = false;
+        }
+      });
+  }
+
 
   // ------------------------------------------------------- empty state
   // Honest and alive: no fake projects, no dead ends, no black screens.
@@ -186,112 +442,13 @@
         </div>
         <h3 class="pp-title">From one brief to the final master — every step feeds the next</h3>
         ${preview}
-        <div class="quickgen" id="quickGen" style="margin-top:32px; padding:20px; border:1px solid var(--line); border-radius:12px; background:var(--panel);">
-          <h3 style="margin:0 0 8px;">⚡ Quick Generate <span class="muted small">(engine test)</span></h3>
-          <p class="muted small" style="margin:0 0 12px;">Test the local AI engine directly. Needs ComfyUI + an SDXL model in Models.</p>
-          <div style="display:flex; gap:8px; margin-bottom:12px;">
-            <input type="text" id="qgPrompt" placeholder="A cinematic sunset over mountains…" style="flex:1; padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:#fff;" />
-            <button class="primary" id="qgBtn">Generate</button>
-          </div>
-          <div id="qgOut" class="muted small"></div>
-        </div>
       </div>`;
     const goTools = $('#npTools');
     if (goTools) goTools.addEventListener('click', () => switchView('models'));
     document.querySelectorAll('.pp-missing, .pp-warn').forEach((b) =>
       b.addEventListener('click', () => switchView('models')));
     $('#npCreate').addEventListener('click', newProjectDialog);
-    const qgBtn = $('#qgBtn');
-    const qgPrompt = $('#qgPrompt');
-    // Brain: suggest based on prompt keywords as user types.
-    if (qgPrompt) qgPrompt.addEventListener('input', async () => {
-      const txt = (qgPrompt.value || '').toLowerCase();
-      const out = $('#qgOut');
-      if (txt.length < 3 || !out || out.querySelector('img')) return;
-      try {
-        // Simple keyword context
-        const ctx = txt.includes('cinematic') ? 'prompt:cinematic'
-          : txt.includes('portrait') ? 'prompt:portrait'
-          : txt.includes('landscape') ? 'prompt:landscape' : null;
-        if (!ctx) return;
-        const r = await window.takeone.brainSuggest(root, ctx, 2);
-        if (r.ok && r.suggestions.length && !out.querySelector('img')) {
-          const s = r.suggestions[0];
-          out.innerHTML = `<span class="muted">💡 Brain suggests: ${esc(s.action.replace('suggest:', ''))} (learned from your past)</span>`;
-        }
-      } catch { /* brain optional */ }
-    });
-    if (qgBtn) qgBtn.addEventListener('click', async () => {
-      const prompt = (qgPrompt || {}).value || '';
-      const out = $('#qgOut');
-      if (!prompt.trim()) { if (out) out.textContent = 'Pehle prompt likhein.'; return; }
-      // Brain: learn that this prompt led to a generation (reward +1 for trying)
-      try {
-        const low = prompt.toLowerCase();
-        const ctx = low.includes('cinematic') ? 'prompt:cinematic'
-          : low.includes('portrait') ? 'prompt:portrait'
-          : low.includes('landscape') ? 'prompt:landscape' : 'prompt:general';
-        await window.takeone.brainLearn(root, ctx, 'suggest:sdxl', 1);
-      } catch { /* brain optional */ }
-      qgBtn.disabled = true;
-      if (out) out.textContent = 'Starting the engine…';
-      try {
-        const r = await window.takeone.comfyGenerate(root, { prompt: prompt.trim() });
-        if (!r.ok) {
-          // WO-27: engine not installed -> plain message + the Install path.
-          if (r.engineMissing) {
-            if (out) out.innerHTML = '<span>The AI engine isn\u2019t installed yet — it\u2019s a one-time setup.</span><br><button class="btn small" id="qgInstallEngine">Install the engine</button>';
-            const ib = document.getElementById('qgInstallEngine');
-            if (ib) ib.addEventListener('click', () => switchView('models'));
-          } else if (r.modelNotVisible) {
-            // WO-41.3: plain words + an action. The error text is plain by
-            // construction (main.js strips the raw ComfyUI JSON) — it is
-            // shown escaped, never as raw JSON.
-            if (out) out.innerHTML = `<span>${esc(r.error)}</span><br><button class="btn small" id="qgModels">Open Models</button>`;
-            const mb = document.getElementById('qgModels');
-            if (mb) mb.addEventListener('click', () => switchView('models'));
-          } else if (out) out.textContent = 'Error: ' + (r.error || r.reason || 'failed');
-          return;
-        }
-        const pid = r.promptId;
-        const qgPromptText = prompt.trim();
-        let genCancelled = false;
-        if (out) out.innerHTML = 'Generating… (this takes a minute on first run) <button class="btn small ghost2" id="qgCancel">Cancel</button>';
-        const cancelBtn = document.getElementById('qgCancel');
-        if (cancelBtn) cancelBtn.addEventListener('click', async () => {
-          genCancelled = true;
-          try { await window.takeone.comfyInterrupt(); } catch { /* best effort */ }
-        });
-        // WO-43: poll MAIN for the finished image — main fetches /view
-        // itself and saves the PNG to the Library, then hands the renderer
-        // a dataUrl. The old path (<img src="http://127.0.0.1:<port>/view…">)
-        // rendered as a broken image on Ali's PC (v2.2.17) and saved
-        // nothing; it is deleted, not kept as a fallback.
-        for (let i = 0; i < 60; i++) {
-          await new Promise((res) => setTimeout(res, 5000));
-          if (genCancelled) { if (out) out.textContent = 'Cancelled.'; return; }
-          const f = await window.takeone.comfyFetchOutput(root, pid, qgPromptText);
-          if (f && f.ok) {
-            if (out) out.innerHTML = `<img src="${esc(f.dataUrl)}" style="max-width:100%; border-radius:8px; margin-top:8px;" />` +
-              `<div style="margin-top:8px;"><b>Saved to Library</b> <span class="muted small">${esc(f.path)}</span></div>` +
-              `<button class="btn small" id="qgOpenFolder">Open folder</button>`;
-            const of = document.getElementById('qgOpenFolder');
-            if (of) of.addEventListener('click', () => window.takeone.showInFolder(f.path));
-            break;
-          }
-          if (f && !f.notFinished) {
-            // Plain words by construction (main never returns raw JSON here).
-            if (out) out.textContent = 'Error: ' + (f.error || 'failed');
-            break;
-          }
-          if (out) out.textContent = `Generating… ${Math.floor((i + 1) * 5 / 60)}m ${((i + 1) * 5) % 60}s`;
-        }
-      } catch (e) {
-        if (out) out.textContent = 'Error: ' + (e.message || e);
-      } finally {
-        qgBtn.disabled = false;
-      }
-    });
+    renderQuickGen();
     $('#npScript').addEventListener('click', async () => {
       const name = await promptModal('New project', 'Project name');
       if (name === null) return;

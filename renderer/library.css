@@ -7,6 +7,7 @@
 .projcard { background: #121218; border: 1px solid #23232c; border-radius: 12px; padding: 16px; }
 .projcard.open { border-color: #4f7cff; }
 .projcard b { font-size: 16px; display: block; margin-bottom: 4px; }
+.projthumb { width: 100%; height: 120px; object-fit: cover; border-radius: 8px; margin-bottom: 10px; display: block; }
 .counts { display: flex; gap: 12px; margin: 10px 0; font-size: 13px; color: #c9c9d4; }
 .danger-t { color: #ff9a9a; }
 .projdetail { margin-top: 12px; border-top: 1px solid #1e1e26; padding-top: 12px; }

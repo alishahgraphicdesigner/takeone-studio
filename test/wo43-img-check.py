@@ -50,7 +50,8 @@ def main():
     proc = subprocess.Popen(
         ["xvfb-run", "-a", str(ELECTRON), ".", "--no-sandbox",
          f"--remote-debugging-port={PORT}"],
-        cwd=str(APP_DIR), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        cwd=str(APP_DIR), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True)
     try:
         if not wait_for_cdp():
             print("FAIL: Electron CDP port did not come up")
@@ -84,12 +85,15 @@ def main():
             print("PASS — dataUrl image renders in real Electron")
             return 0
     finally:
+        # Process-group kill: terminating xvfb-run alone orphans Electron.
         try:
-            proc.terminate()
+            import os, signal
+            os.killpg(proc.pid, signal.SIGTERM)
             proc.wait(timeout=10)
         except Exception:
             try:
-                proc.kill()
+                import os, signal
+                os.killpg(proc.pid, signal.SIGKILL)
             except Exception:
                 pass
 

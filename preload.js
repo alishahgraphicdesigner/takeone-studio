@@ -41,6 +41,11 @@ contextBridge.exposeInMainWorld('takeone', {
   comfyGenerate: (root, params) => ipcRenderer.invoke('takeone:comfyGenerate', root, params),
   // WO-43: fetch + Library-save a finished Quick Generate image (main process).
   comfyFetchOutput: (root, promptId, prompt) => ipcRenderer.invoke('takeone:comfyFetchOutput', root, promptId, prompt),
+  // M1: Ali pack, contact sheet, per-image actions.
+  comfyGeneratePack: (root, params) => ipcRenderer.invoke('takeone:comfyGeneratePack', root, params),
+  saveContactSheet: (root, dataUrl) => ipcRenderer.invoke('takeone:saveContactSheet', root, dataUrl),
+  copyText: (text) => ipcRenderer.invoke('takeone:copyText', text),
+  deleteQuickImage: (root, imagePath) => ipcRenderer.invoke('takeone:deleteQuickImage', root, imagePath),
   comfyHistory: (promptId) => ipcRenderer.invoke('takeone:comfyHistory', promptId),
   comfyInterrupt: () => ipcRenderer.invoke('takeone:comfyInterrupt'),
   brainLearn: (root, context, action, reward) => ipcRenderer.invoke('takeone:brainLearn', root, context, action, reward),

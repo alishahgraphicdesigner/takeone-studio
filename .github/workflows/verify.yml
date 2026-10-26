@@ -12,6 +12,33 @@ on:
         default: false
 
 jobs:
+  # M1 UI AUDIT: the real Electron app (no stubs) under a throwaway HOME,
+  # every screen x three viewports, automatic clipped/overlap/truncation
+  # checks + contact_sheet.png artifact. This job is part of verify, so
+  # the WO-40 gate fails the installer build when the audit fails — a
+  # red audit can never ship. (npm ci provides the electron binary;
+  # Playwright is used only as a CDP client, no browser download.)
+  ui-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: npm ci
+      - run: pip install playwright pillow
+      - name: UI audit (Electron/CDP, 5 screens x 3 viewports)
+        run: xvfb-run -a python3 tools/ui-audit.py --out ui-audit-out
+      - name: Upload UI audit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-audit-${{ github.run_number }}
+          path: ui-audit-out
+          if-no-files-found: error
+
   logic-and-real-aria2-linux:
     runs-on: ubuntu-latest
     timeout-minutes: 20

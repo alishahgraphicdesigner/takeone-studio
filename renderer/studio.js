@@ -82,6 +82,9 @@
     const pc = cfg.pcCheck || {};
     const shownRoot = await window.takeone.displayPath(root);
     $('#settingsCards').innerHTML =
+      // M1.g: the data folder, shown read-only (plain text, never an
+      // editable field) + the diagnostics button alongside it.
+      card('Data folder', shownRoot, '<span class="muted small">Read-only — this is where TakeOne keeps everything (projects, models, Library).</span>') +
       card('Language', 'English') +
       card('PC check', pc.measuredAt ? 'Completed ' + new Date(pc.measuredAt).toLocaleString() : 'Not run',
         pc.speedMbps !== null && pc.speedMbps !== undefined ? `Download speed: ${pc.speedMbps} Mbps (measured)` : 'Download speed: not measured') +

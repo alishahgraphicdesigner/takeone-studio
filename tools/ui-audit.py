@@ -1,0 +1,321 @@
+#!/usr/bin/env python3
+"""ui-audit.py — M1 UI AUDIT: every screen, three viewports, automatic checks.
+
+Launches the REAL Electron app (no stubs, no mocks) under a throwaway HOME
+with a pre-seeded library: config.json with wizardCompleted=true, so boot
+goes straight to the Studio window with real IPC, plus one real
+"Quick Generate" project holding one real PNG (so the Library card
+thumbnail is a real render, not a fixture).
+
+For each screen (Studio, Library, Models, Extras, Settings) and each
+viewport (1280x800, 1920x1080, 1280x800 at 125% scale via
+deviceScaleFactor 1.25), it screenshots the window and runs checks:
+  - clipped text: visible element with scrollWidth > clientWidth while
+    its horizontal overflow is hidden/clip (text cut off, no scroll).
+  - overlapping interactive elements: two visible buttons/inputs/
+    textareas/selects/links whose boxes intersect (ancestor pairs and
+    full containment excluded — a button inside a card is not an overlap).
+  - truncated buttons: any visible button with scrollWidth > clientWidth.
+  - Studio only: #qgPrompt must be a TEXTAREA that auto-grows (a long
+    pasted value grows the box and stays fully visible, no hidden overflow).
+  - Library only: a .projthumb <img> with naturalWidth > 0.
+  - Settings only: "Data folder" text + the diagnostics button present.
+
+All screenshots are composed into contact_sheet.png (grid: screens as
+rows, viewports as columns) with a report.json. Any failed check, or a
+missing screenshot, exits 1 — the CI job fails, and the WO-40 gate then
+fails the installer build.
+
+Usage:
+    xvfb-run -a python3 tools/ui-audit.py --out ui-audit-out
+    (CI wraps it in xvfb-run; the script itself does not start X.)
+Exit 0 = all screens, all viewports, all checks green. Exit 1 = anything else.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+APP_DIR = HERE.parent
+ELECTRON = APP_DIR / "node_modules" / ".bin" / "electron"
+PORT = 9224
+
+# 1x1 transparent PNG — the seeded Library thumbnail (real bytes).
+TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+)
+
+VIEWS = ["studio", "library", "models", "extras", "settings"]
+VIEWPORTS = [
+    ("1280x800", 1280, 800, 1.0),
+    ("1920x1080", 1920, 1080, 1.0),
+    ("1280x800@125pct", 1280, 800, 1.25),
+]
+
+CHECKS_JS = r"""
+() => {
+  const vis = (el) => {
+    if (!el.getClientRects().length) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    const st = getComputedStyle(el);
+    if (st.display === 'none' || st.visibility === 'hidden') return false;
+    // Off-screen views are display:none in this app; offsetParent null
+    // catches them too (except position:fixed, which we still want).
+    if (el.offsetParent === null && st.position !== 'fixed') return false;
+    return true;
+  };
+  const clipped = [];
+  const buttons = [];
+  for (const el of document.querySelectorAll('*')) {
+    if (!vis(el)) continue;
+    if (el.scrollWidth > el.clientWidth + 1) {
+      const ov = getComputedStyle(el).overflowX;
+      if (ov === 'hidden' || ov === 'clip') {
+        const txt = (el.innerText || '').trim().slice(0, 60);
+        clipped.push(`${el.tagName.toLowerCase()}.${(el.className.baseVal !== undefined ? '' : el.className || '')} :: ${txt}`);
+      }
+      if (el.tagName === 'BUTTON') buttons.push(el.innerText.trim().slice(0, 60));
+    }
+  }
+  const overlaps = [];
+  const inter = [...document.querySelectorAll('button, input, textarea, select, a')]
+    .filter(vis);
+  for (let i = 0; i < inter.length; i++) {
+    for (let j = i + 1; j < inter.length; j++) {
+      const a = inter[i], b = inter[j];
+      if (a.contains(b) || b.contains(a)) continue;
+      const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      const ix = Math.max(0, Math.min(ra.right, rb.right) - Math.max(ra.left, rb.left));
+      const iy = Math.max(0, Math.min(ra.bottom, rb.bottom) - Math.max(ra.top, rb.top));
+      // Full containment is layout, not overlap (e.g. a control inside a
+      // larger labelled area); only real intersections count.
+      const contained = (ix * iy >= Math.min(ra.width * ra.height, rb.width * rb.height) - 1);
+      if (ix * iy > 25 && !contained) {
+        overlaps.push(`${a.tagName}#${a.id || a.className} x ${b.tagName}#${b.id || b.className}`);
+      }
+    }
+  }
+  return { clipped, buttons, overlaps };
+}
+"""
+
+PROMPT_JS = r"""
+async () => {
+  const ta = document.querySelector('#qgPrompt');
+  if (!ta) return { ok: false, reason: '#qgPrompt missing' };
+  if (ta.tagName !== 'TEXTAREA') return { ok: false, reason: '#qgPrompt is ' + ta.tagName + ', not TEXTAREA' };
+  // Reset first: an earlier viewport's check leaves a long value behind,
+  // which would pollute the baseline (at a wider viewport the same text
+  // wraps into fewer lines, so the box correctly SHRINKS — not a failure).
+  ta.value = '';
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 200));
+  const before = ta.offsetHeight;
+  ta.focus();
+  ta.value = 'A very long pasted prompt '.repeat(20).trim();
+  ta.dispatchEvent(new Event('input', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 200));
+  const grown = ta.offsetHeight > before;
+  const fullyVisible = (ta.scrollHeight - ta.clientHeight) <= 2;
+  return { ok: grown && fullyVisible, before, after: ta.offsetHeight, scrollHeight: ta.scrollHeight, clientHeight: ta.clientHeight };
+}
+"""
+
+
+def wait_for_cdp(port, timeout_s=60):
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(f"http://localhost:{port}/json/version", timeout=2)
+            return True
+        except Exception:
+            time.sleep(1)
+    return False
+
+
+def seed_library(work):
+    """Throwaway HOME + storage root with a completed wizard + one real project."""
+    home = work / "home"
+    root = work / "root"
+    (home / ".config").mkdir(parents=True)
+    proj = root / "Projects" / "quick-generate-audit"
+    (proj / "images").mkdir(parents=True)
+    import base64
+    (proj / "images" / "audit-thumb.png").write_bytes(base64.b64decode(TINY_PNG_B64))
+    (proj / "project.json").write_text(json.dumps({
+        "id": "quick-generate-audit", "name": "Quick Generate",
+        "createdAt": "2026-10-26T00:00:00.000Z", "updatedAt": "2026-10-26T00:00:00.000Z",
+        "steps": {}, "currentStep": 1, "originalIdea": "",
+    }), encoding="utf-8")
+    (root / "config.json").write_text(json.dumps({
+        "version": 1, "wizardCompleted": True, "storageRoot": str(root),
+        "pcCheck": {"measuredAt": "2026-10-26T00:00:00.000Z", "speedMbps": 130},
+        "packChoice": None, "customTools": [], "niche": "none",
+    }), encoding="utf-8")
+    # Receipt: this is how boot() finds the storage root.
+    receipt_dir = home / ".config" / "TakeOne"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    (receipt_dir / "receipt.json").write_text(
+        json.dumps({"storageRoot": str(root)}), encoding="utf-8")
+    return home, root
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--electron-bin", default=str(ELECTRON))
+    args = ap.parse_args()
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    from playwright.sync_api import sync_playwright
+
+    electron = Path(args.electron_bin)
+    if not electron.exists():
+        print(f"FAIL: electron binary not found: {electron} (run npm ci first)")
+        return 1
+
+    work = Path(tempfile.mkdtemp(prefix="ui-audit-"))
+    home, _root = seed_library(work)
+    env = dict(os.environ, HOME=str(home))
+    # Free port per run (a stale app on a fixed port would silently serve
+    # OLD code — the audit must never attach to anything but its own app).
+    import socket
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    # Keep Electron's GPU path off in headless CI; the app renders in xvfb.
+    # New session + process-group kill on cleanup: terminating xvfb-run
+    # alone orphans Electron (it keeps the CDP port and the old code).
+    proc = subprocess.Popen(
+        ["xvfb-run", "-a", str(electron), ".", "--no-sandbox", "--disable-gpu",
+         f"--remote-debugging-port={port}"],
+        cwd=str(APP_DIR), env=env, start_new_session=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    report = {}
+    failures = []
+    try:
+        if not wait_for_cdp(port):
+            print("FAIL: Electron CDP port did not come up")
+            return 1
+        with sync_playwright() as pw:
+            browser = pw.chromium.connect_over_cdp(f"http://localhost:{port}")
+            pages = []
+            for _ in range(30):
+                pages = browser.contexts[0].pages if browser.contexts else []
+                if pages:
+                    break
+                time.sleep(1)
+            if not pages:
+                print("FAIL: no app pages found over CDP")
+                return 1
+            page = pages[-1]
+            page.wait_for_function(
+                "() => document.querySelector('#studioBody') && document.querySelector('#studioBody').innerText.trim().length > 0",
+                timeout=60000)
+            for view in VIEWS:
+                report[view] = {}
+                # Real user path: click the rail button.
+                page.click(f'.railbtn[data-view="{view}"]')
+                page.wait_for_timeout(800)
+                for label, w, h, dsf in VIEWPORTS:
+                    cdp = page.context.new_cdp_session(page)
+                    cdp.send("Emulation.setDeviceMetricsOverride",
+                             {"width": w, "height": h, "deviceScaleFactor": dsf, "mobile": False})
+                    page.wait_for_timeout(400)
+                    shot = out / f"{view}_{label}.png"
+                    page.screenshot(path=str(shot))
+                    checks = page.evaluate(CHECKS_JS)
+                    extra = {}
+                    if view == "studio":
+                        extra["prompt"] = page.evaluate(PROMPT_JS)
+                    if view == "library":
+                        extra["thumb"] = page.evaluate(
+                            "() => [...document.querySelectorAll('.projthumb')].some((i) => i.naturalWidth > 0)")
+                    if view == "settings":
+                        # The card label is uppercased by CSS, so innerText
+                        # reads "DATA FOLDER" — match case-insensitively.
+                        extra["dataFolder"] = page.evaluate(
+                            "() => document.body.innerText.toLowerCase().includes('data folder')")
+                        extra["diagnosticsBtn"] = page.evaluate(
+                            "() => !!document.querySelector('#copyDiagnostics')")
+                    view_fail = []
+                    if checks["clipped"]:
+                        view_fail.append(f"clipped text: {checks['clipped'][:5]}")
+                    if checks["overlaps"]:
+                        view_fail.append(f"overlapping interactive elements: {checks['overlaps'][:5]}")
+                    if checks["buttons"]:
+                        view_fail.append(f"truncated button text: {checks['buttons'][:5]}")
+                    if view == "studio" and not extra["prompt"]["ok"]:
+                        view_fail.append(f"prompt textarea check failed: {extra['prompt']}")
+                    if view == "library" and not extra["thumb"]:
+                        view_fail.append("no Library card thumbnail rendered (naturalWidth 0)")
+                    if view == "settings" and not (extra["dataFolder"] and extra["diagnosticsBtn"]):
+                        view_fail.append(f"settings missing data folder / diagnostics button: {extra}")
+                    report[view][label] = {
+                        "screenshot": shot.name, "checks": checks, "extra": extra,
+                        "failures": view_fail,
+                    }
+                    if view_fail:
+                        failures.append(f"{view} {label}: " + "; ".join(view_fail))
+                    print(f"{view} {label}: {'FAIL ' + '; '.join(view_fail) if view_fail else 'OK'}")
+    finally:
+        # Kill the whole process group: xvfb-run, Xvfb, AND Electron.
+        # (proc.terminate() alone leaves Electron alive on its CDP port.)
+        try:
+            import signal
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=10)
+        except Exception:
+            try:
+                import signal
+                os.killpg(proc.pid, signal.SIGKILL)
+            except Exception:
+                pass
+
+    # Contact sheet: rows = screens, columns = viewports.
+    try:
+        from PIL import Image, ImageDraw
+        cell_w, label_h = 480, 26
+        thumbs = {}
+        for view in VIEWS:
+            for label, _w, _h, _d in VIEWPORTS:
+                p = out / f"{view}_{label}.png"
+                if p.exists():
+                    im = Image.open(p).convert("RGB")
+                    scale = cell_w / im.width
+                    thumbs[(view, label)] = im.resize((cell_w, int(im.height * scale)))
+        cell_h = max((im.height for im in thumbs.values()), default=0) + label_h
+        sheet = Image.new("RGB", (cell_w * len(VIEWPORTS), cell_h * len(VIEWS)), (20, 20, 26))
+        draw = ImageDraw.Draw(sheet)
+        for ri, view in enumerate(VIEWS):
+            for ci, (label, _w, _h, _d) in enumerate(VIEWPORTS):
+                im = thumbs.get((view, label))
+                if not im:
+                    continue
+                x, y = ci * cell_w, ri * cell_h
+                # Plain hyphen: PIL's default font has no em-dash glyph.
+                draw.text((x + 6, y + 6), f"{view} - {label}", fill=(255, 255, 255))
+                sheet.paste(im, (x, y + label_h))
+        sheet.save(out / "contact_sheet.png")
+    except Exception as e:  # noqa: BLE001 — a sheet failure must fail the audit, loudly
+        failures.append(f"contact sheet failed: {e}")
+    (out / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    if failures:
+        print("UI AUDIT FAILED:")
+        for f in failures:
+            print(" - " + f)
+        return 1
+    print("UI AUDIT PASS — all screens, all viewports, all checks green")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

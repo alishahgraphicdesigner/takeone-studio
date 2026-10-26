@@ -60,12 +60,14 @@ describe('fetchAndSaveOutput (WO-43.1, WO-43.2)', () => {
     try {
       const r = await mgr.fetchAndSaveOutput(root, 'pid1', { prompt: 'a cat', model: 'sdxl_lightning_4step.safetensors', seed: 42, width: 512, height: 512 });
       assert.equal(r.ok, true, JSON.stringify(r));
-      assert.ok(r.path.includes(path.join('Library', 'Quick Generate')), r.path);
+      // M1: a real Library project, not the old loose folder.
+      assert.ok(r.path.includes(path.join('Projects', r.projectId, 'images')), r.path);
+      assert.equal(r.projectName, 'Quick Generate');
       assert.ok(fs.existsSync(r.path), 'PNG must exist on disk');
       const bytes = fs.readFileSync(r.path);
       assert.deepEqual([...bytes.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 'PNG magic bytes');
       assert.ok(r.dataUrl.startsWith('data:image/png;base64,'), 'renderer gets a dataUrl, never a local URL');
-      const sidecar = JSON.parse(fs.readFileSync(r.path.replace(/\.png$/i, '.json'), 'utf8'));
+      const sidecar = JSON.parse(fs.readFileSync(path.join(path.dirname(r.path), '.sidecars', path.basename(r.path).replace(/\.png$/i, '.json')), 'utf8'));
       assert.equal(sidecar.prompt, 'a cat');
       assert.equal(sidecar.model, 'sdxl_lightning_4step.safetensors');
       assert.equal(sidecar.seed, 42);
@@ -100,8 +102,8 @@ describe('fetchAndSaveOutput (WO-43.1, WO-43.2)', () => {
       const r = await mgr.fetchAndSaveOutput(root, 'pid1', {});
       assert.equal(r.ok, false);
       assert.match(r.error, /not a PNG/);
-      const dir = path.join(root, 'Library', 'Quick Generate');
-      assert.ok(!fs.existsSync(dir) || fs.readdirSync(dir).length === 0, 'an error page must never be saved as an image');
+      const projects = path.join(root, 'Projects');
+      assert.ok(!fs.existsSync(projects) || fs.readdirSync(projects).length === 0, 'an error page must never be saved as an image');
     } finally { server.close(); }
   });
   it('unwritable Library root -> plain message, never a throw', async () => {
@@ -147,7 +149,11 @@ describe('diagnostics: last generation + Quick Generate outputs (WO-43.5)', () =
   });
   it('listQuickOutputs returns the newest 5 PNGs, name + size', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wo43-diag3-'));
-    const dir = path.join(root, 'Library', 'Quick Generate');
+    // M1: outputs live in the real Quick Generate project's images dir.
+    const projDir = path.join(root, 'Projects', 'quick-generate-1');
+    fs.mkdirSync(projDir, { recursive: true });
+    fs.writeFileSync(path.join(projDir, 'project.json'), JSON.stringify({ id: 'quick-generate-1', name: 'Quick Generate' }));
+    const dir = path.join(projDir, 'images');
     fs.mkdirSync(dir, { recursive: true });
     for (let i = 0; i < 7; i++) {
       const p = path.join(dir, `2026-10-24-12000${i}.png`);

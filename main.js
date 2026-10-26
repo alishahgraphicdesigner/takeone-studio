@@ -1054,7 +1054,7 @@ function wireIPC() {
   // ComfyManager WITHOUT the extra_model_paths config, which is exactly
   // why ComfyUI's checkpoint list was empty on Ali's PC.
   const { createEngineComfy, MODEL_NOT_VISIBLE_MSG } = require('./main/comfy.js');
-  const { sdxlLightningTxt2Img } = require('./main/comfy-workflows.js');
+  const { sdxlLightningTxt2Img, aspectDims, DEFAULT_NEGATIVE, presetParams, buildAliPackJobs } = require('./main/comfy-workflows.js');
   const engine = require('./main/engine.js');
   let comfyMgr = null;
   // WO-43: per-prompt sidecar facts for the Library save. The renderer knows
@@ -1186,30 +1186,132 @@ function wireIPC() {
     }
     // (Preflight failure itself is not fatal: queueing will surface a plain
     // error if the model really is missing.)
-    // WO-43: the seed is chosen HERE (not inside the workflow builder) so
-    // the Library sidecar can record exactly what was generated.
-    const seed = Math.floor(Math.random() * 1000000000);
-    const workflow = sdxlLightningTxt2Img({
-      checkpoint,
-      positive: params.prompt || '',
-      negative: params.negative || '',
-      width: params.width || 1024,
-      height: params.height || 1024,
-      seed,
-    });
-    const q = await mgr.queuePrompt(workflow);
-    if (!q.ok) {
-      // WO-41.3: the FULL raw error goes to the app log only. The renderer
-      // receives plain words — never raw JSON.
-      try { global.__takeoneLog && global.__takeoneLog('comfyGenerate raw error: ' + (q.rawError || q.error)); } catch {}
-      const { rawError, ...plain } = q;
-      return plain;
+    // M1: variations (1-4), aspect picker, preset, seed lock, default
+    // negative. The seed is chosen HERE (not inside the workflow builder)
+    // so the Library sidecar records exactly what was generated; variation
+    // i uses baseSeed + i, so a locked seed reproduces the whole set.
+    const variations = Math.min(4, Math.max(1, parseInt(params.variations, 10) || 1));
+    const [width, height] = aspectDims(params.aspect);
+    const preset = presetParams(params.preset);
+    const negative = (params.negative || '').trim() ? params.negative : DEFAULT_NEGATIVE;
+    const baseSeed = Number.isFinite(Number(params.seed)) && params.seed !== '' && params.seed !== null
+      ? Math.floor(Number(params.seed)) : Math.floor(Math.random() * 1000000000);
+    const promptIds = [];
+    for (let i = 0; i < variations; i++) {
+      const seed = baseSeed + i;
+      const workflow = sdxlLightningTxt2Img({
+        checkpoint,
+        positive: params.prompt || '',
+        negative,
+        width, height, seed,
+        steps: preset.steps, cfg: preset.cfg,
+      });
+      const q = await mgr.queuePrompt(workflow);
+      if (!q.ok) {
+        // WO-41.3: the FULL raw error goes to the app log only. The
+        // renderer receives plain words — never raw JSON.
+        try { global.__takeoneLog && global.__takeoneLog('comfyGenerate raw error: ' + (q.rawError || q.error)); } catch {}
+        const { rawError, ...plain } = q;
+        return plain;
+      }
+      promptIds.push(q.promptId);
+      qgMeta.set(q.promptId, {
+        prompt: params.prompt || '', model: checkpoint, seed,
+        width, height, preset: params.preset || 'fast', aspect: params.aspect || '1:1',
+        variation: i,
+      });
     }
-    qgMeta.set(q.promptId, {
-      prompt: params.prompt || '', model: checkpoint, seed,
-      width: params.width || 1024, height: params.height || 1024,
-    });
-    return q;
+    return { ok: true, promptIds, promptId: promptIds[0], variations, width, height, seed: baseSeed, preset: params.preset || 'fast', aspect: params.aspect || '1:1' };
+  });
+  // M1: the Ali pack — 3 prompts x 3 settings, ONE seed (buildAliPackJobs).
+  // Queues all 9; the renderer polls each promptId and assembles the
+  // contact sheet. Same seed across the pack = settings are comparable.
+  ipcMain.handle('takeone:comfyGeneratePack', async (e, root, params) => {
+    const r = root || defaultRoot();
+    try { await engine.assertEngineReady(r); }
+    catch (err) { return { ok: false, engineMissing: true, error: err.message }; }
+    const mgr = getComfy(r);
+    if (!mgr.isRunning()) {
+      const st = await mgr.start();
+      if (!st.ok) return st;
+    }
+    const tool = toolById('image-studio');
+    if (!tool || !(await toolInstalled(r, tool))) {
+      return { ok: false, error: "Image Studio isn't installed yet. Open Models and download it.", action: 'models' };
+    }
+    const checkpoint = tool.fileName;
+    const pre = await mgr.getCheckpointList();
+    if (pre.ok && !pre.checkpoints.includes(checkpoint)) {
+      return { ok: false, modelNotVisible: true, error: MODEL_NOT_VISIBLE_MSG, action: 'models' };
+    }
+    const seed = Number.isFinite(Number(params && params.seed)) && params.seed !== '' && params.seed !== null
+      ? Math.floor(Number(params.seed)) : Math.floor(Math.random() * 1000000000);
+    const jobs = buildAliPackJobs(seed);
+    const queued = [];
+    for (const job of jobs) {
+      const pp = presetParams(job.preset);
+      const workflow = sdxlLightningTxt2Img({
+        checkpoint, positive: job.prompt, negative: job.negative,
+        width: job.width, height: job.height, seed: job.seed,
+        steps: pp.steps, cfg: pp.cfg,
+      });
+      const q = await mgr.queuePrompt(workflow);
+      if (!q.ok) {
+        try { global.__takeoneLog && global.__takeoneLog('comfyGeneratePack raw error: ' + (q.rawError || q.error)); } catch {}
+        const { rawError, ...plain } = q;
+        return plain;
+      }
+      qgMeta.set(q.promptId, {
+        prompt: job.prompt, model: checkpoint, seed: job.seed,
+        width: job.width, height: job.height, preset: job.preset, aspect: job.aspect,
+      });
+      queued.push({ ...job, promptId: q.promptId });
+    }
+    return { ok: true, seed, jobs: queued };
+  });
+  // M1: save the Ali pack contact sheet (a dataUrl from the renderer's
+  // canvas) into the Quick Generate project, next to the 9 images.
+  ipcMain.handle('takeone:saveContactSheet', async (e, root, dataUrl) => {
+    try {
+      const r = root || defaultRoot();
+      const project = await libMod.ensureQuickGenerateProject(r);
+      const m = /^data:image\/png;base64,(.+)$/.exec(String(dataUrl || ''));
+      if (!m) return { ok: false, reason: 'Not a PNG data URL.' };
+      const target = path.join(project.dir, 'contact_sheet.png');
+      await fs.promises.writeFile(target, Buffer.from(m[1], 'base64'));
+      return { ok: true, path: target };
+    } catch (err) {
+      return { ok: false, reason: 'Could not save the contact sheet.' };
+    }
+  });
+  // M1: per-image actions — copy prompt (main clipboard, always works in
+  // Electron) and delete to Trash (the Library's 30-day Trash, restorable).
+  ipcMain.handle('takeone:copyText', async (e, text) => {
+    try {
+      const { clipboard } = require('electron');
+      clipboard.writeText(String(text || ''));
+      return { ok: true };
+    } catch { return { ok: false }; }
+  });
+  ipcMain.handle('takeone:deleteQuickImage', async (e, root, imagePath) => {
+    try {
+      const r = root || defaultRoot();
+      const project = await libMod.ensureQuickGenerateProject(r);
+      const rel = path.relative(path.join(project.dir, 'images'), imagePath);
+      if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return { ok: false, reason: 'Not a Quick Generate image.' };
+      const dr = await libMod.deleteAsset(r, project.id, `images/${rel}`);
+      if (!dr.ok) return dr;
+      // Sidecar follows the image into Trash (best-effort; the PNG's own
+      // Trash entry is what restore uses — a missing sidecar never blocks).
+      try {
+        const stamp = path.basename(rel, '.png');
+        const sidecar = path.join(project.dir, 'images', '.sidecars', `${stamp}.json`);
+        await fs.promises.rename(sidecar, path.join(r, 'Trash', 'assets', `${dr.trashName}.json`));
+      } catch { /* sidecar optional */ }
+      return { ok: true, trashName: dr.trashName };
+    } catch (err) {
+      return { ok: false, reason: 'Could not delete.' };
+    }
   });
   // WO-43: fetch a finished Quick Generate image through main (never a
   // browser <img> to a local URL) and save it to the Library. While the

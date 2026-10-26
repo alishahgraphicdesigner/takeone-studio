@@ -298,10 +298,16 @@ function lastGenerationLine(root, over) {
   return stripAnsi(lines[lines.length - 1]).replace(/^\[(out|err)\]\s*/, '').trim();
 }
 
-/** WO-43: the last 5 Quick Generate PNGs in <root>/Library/Quick Generate, newest first. */
+/** WO-43 (M1: new home): the last 5 Quick Generate PNGs, newest first.
+ * M1 saves into the real "Quick Generate" project's images/ dir; the
+ * pre-M1 loose folder (Library/Quick Generate) is still read as a
+ * fallback so older saves are not hidden. */
 function listQuickOutputs(root, over) {
   if (over !== undefined) return over;
-  const dir = path.join(root, 'Library', 'Quick Generate');
+  let dir = null;
+  try { dir = require('./library.js').findQuickGenerateProjectDir(root); } catch { dir = null; }
+  if (dir) dir = path.join(dir, 'images');
+  else dir = path.join(root, 'Library', 'Quick Generate');
   let names = [];
   try { names = fs.readdirSync(dir).filter((n) => /\.png$/i.test(n)); } catch { return []; }
   const fmt = (b) => b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : Math.max(1, Math.round(b / 1048576)) + ' MB';
@@ -463,7 +469,7 @@ async function buildDiagnosticsReport(root, over = {}) {
     '--- Last generation ---',
     lastGen || '(no completed generation in the ComfyUI log yet)',
     '',
-    '--- Quick Generate outputs (last 5, Library\\Quick Generate) ---',
+    '--- Quick Generate outputs (last 5, Quick Generate project) ---',
     quickOuts.length ? quickOuts.map((o) => '  ' + o).join('\n') : '  (none saved yet)',
     '',
     prevSession ? prevSession + '\n' : '',

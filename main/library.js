@@ -148,6 +148,20 @@ async function listProjects(root) {
     if (!doc) continue; // folder without project.json is not a project — skip, don't invent
     const counts = await countAssets(path.join(base, id));
     const readySteps = Object.values(doc.steps || {}).filter((s) => s.status === 'ready').length;
+    // M1: card thumbnail — the newest image in the project, or null.
+    // (Library cards render it; detail view already thumbnails every image.)
+    let thumb = null;
+    try {
+      const entries = await fsp.readdir(path.join(base, id, 'images'), { withFileTypes: true });
+      const imgs = [];
+      for (const e of entries) {
+        if (!e.isFile() || !IMAGE_EXT.has(path.extname(e.name).toLowerCase())) continue;
+        try { const st = await fsp.stat(path.join(base, id, 'images', e.name)); imgs.push({ name: e.name, mtime: st.mtimeMs }); }
+        catch { /* unreadable — skip */ }
+      }
+      imgs.sort((a, b) => b.mtime - a.mtime);
+      if (imgs.length) thumb = `images/${imgs[0].name}`;
+    } catch { /* no images dir — no thumbnail */ }
     out.push({
       id: doc.id,
       name: doc.name,
@@ -157,10 +171,46 @@ async function listProjects(root) {
       readySteps,
       currentStep: doc.currentStep || 1,
       hasIdea: !!(doc.originalIdea && doc.originalIdea.trim()),
+      thumb,
     });
   }
   out.sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
   return out;
+}
+
+/**
+ * M1 / WO-44: the ONE "Quick Generate" project. Quick Generate images are
+ * real Library assets, not loose files: find the project by name, or
+ * create it (a normal project — it opens in the Library like any other,
+ * with thumbnails, Show in folder, and Delete-to-Trash).
+ * Returns { id, dir } where dir is Projects/<id>.
+ */
+const QUICK_GENERATE_PROJECT = 'Quick Generate';
+async function ensureQuickGenerateProject(root) {
+  const projects = await listProjects(root);
+  const found = projects.find((p) => p.name === QUICK_GENERATE_PROJECT);
+  if (found) return { id: found.id, dir: path.join(projectsDir(root), found.id) };
+  const created = await createProject(root, QUICK_GENERATE_PROJECT);
+  if (!created.ok) throw new Error(created.reason || 'Could not create the Quick Generate project.');
+  return { id: created.project.id, dir: path.join(projectsDir(root), created.project.id) };
+}
+
+/**
+ * Sync twin for diagnostics (which builds its report synchronously):
+ * returns the Projects/<id> dir of the "Quick Generate" project, or null.
+ * Never creates anything.
+ */
+function findQuickGenerateProjectDir(root) {
+  let ids;
+  try { ids = fs.readdirSync(projectsDir(root), { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name); }
+  catch { return null; }
+  for (const id of ids) {
+    try {
+      const doc = JSON.parse(fs.readFileSync(path.join(projectsDir(root), id, 'project.json'), 'utf8'));
+      if (doc && doc.name === QUICK_GENERATE_PROJECT) return path.join(projectsDir(root), id);
+    } catch { /* not a project — skip */ }
+  }
+  return null;
 }
 
 /** SHA-256 of a file, streamed (safe for large video files). */
@@ -447,6 +497,9 @@ module.exports = {
   makeProjectId,
   validateProjectName,
   defaultProjectDoc,
+  QUICK_GENERATE_PROJECT,
+  ensureQuickGenerateProject,
+  findQuickGenerateProjectDir,
   createProject: guardBlocked(createProject),
   renameProject: guardBlocked(renameProject),
   listProjects,

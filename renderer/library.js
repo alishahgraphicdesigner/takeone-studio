@@ -50,6 +50,7 @@
     } else {
       html += `<h2 class="libsec">Your films</h2><div class="projgrid">` + projects.map((p) => `
         <div class="projcard ${openId === p.id ? 'open' : ''}">
+          ${p.thumb ? `<img class="projthumb" src="${fileUrl(root + '/Projects/' + p.id + '/' + p.thumb)}" alt="">` : ''}
           <b>${esc(p.name)}</b>
           <span class="muted small">${p.counts.total} file${p.counts.total === 1 ? '' : 's'} · ${p.readySteps}/6 steps ready · Updated ${esc(fmtDate(p.updatedAt))}</span>
           <div class="counts"><span>🖼 ${p.counts.images}</span><span>🎬 ${p.counts.videos}</span><span>🎙 ${p.counts.audio}</span><span>📦 ${p.counts.exports}</span></div>

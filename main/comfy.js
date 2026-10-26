@@ -437,7 +437,19 @@ class ComfyManager {
       logToApp(`Quick Generate /view returned non-PNG bytes: content-type ${bin.contentType}, ${bin.buffer.length} bytes`);
       return { ok: false, error: "The image was made but couldn't be saved. What ComfyUI returned was not a PNG image." };
     }
-    const dir = path.join(root, 'Library', 'Quick Generate');
+    // M1 / WO-44: a REAL Library project, not a loose folder. The image
+    // lands in Projects/<id>/images/ so the Library shows it with a
+    // thumbnail, Show in folder, and Delete-to-Trash like any asset.
+    // Sidecars live in images/.sidecars/ (a dot-dir): listAssets only
+    // lists files, so sidecars never appear as broken thumbnails.
+    let project;
+    try {
+      project = await require('./library.js').ensureQuickGenerateProject(root);
+    } catch (e) {
+      logToApp(`Quick Generate project failed: ${e.message}`);
+      return { ok: false, error: "The image was made but couldn't be saved. TakeOne could not open the Quick Generate project." };
+    }
+    const dir = path.join(project.dir, 'images');
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-')
       + '-' + Math.random().toString(36).slice(2, 6);
     const fileName = `${stamp}.png`;
@@ -447,11 +459,15 @@ class ComfyManager {
       await fsp.writeFile(pngPath, bin.buffer);
       const sidecar = {
         prompt: meta.prompt || '', model: meta.model || '', seed: meta.seed ?? null,
-        width: meta.width || null, height: meta.height || null, promptId,
+        width: meta.width || null, height: meta.height || null,
+        preset: meta.preset || null, aspect: meta.aspect || null,
+        variation: meta.variation ?? null, promptId,
         comfyFile: { filename: img.filename, subfolder: img.subfolder || '', type: img.type || 'output' },
         bytes: bin.buffer.length, savedAt: new Date().toISOString(), source: 'quick-generate',
       };
-      await fsp.writeFile(path.join(dir, `${stamp}.json`), JSON.stringify(sidecar, null, 2), 'utf8');
+      const sidecarDir = path.join(dir, '.sidecars');
+      await fsp.mkdir(sidecarDir, { recursive: true });
+      await fsp.writeFile(path.join(sidecarDir, `${stamp}.json`), JSON.stringify(sidecar, null, 2), 'utf8');
     } catch (e) {
       logToApp(`Quick Generate save failed: ${e.message}`);
       return { ok: false, error: "The image was made but couldn't be saved. TakeOne could not write it to the Library." };
@@ -459,6 +475,7 @@ class ComfyManager {
     logToApp(`Quick Generate saved: ${pngPath} (${bin.buffer.length} bytes)`);
     return {
       ok: true, path: pngPath, fileName, bytes: bin.buffer.length,
+      projectId: project.id, projectName: 'Quick Generate',
       dataUrl: 'data:image/png;base64,' + bin.buffer.toString('base64'),
       comfyFile: { filename: img.filename, subfolder: img.subfolder || '', type: img.type || 'output' },
     };
