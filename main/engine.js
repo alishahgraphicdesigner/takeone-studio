@@ -355,7 +355,14 @@ async function shippedPythonVersion(root, runExec) {
 }
 
 /** Amendment 4: explicit model-type -> Models/<category> mapping.
- *  WO-38: async — no sync writes on the install path. */
+ *  WO-38: async — no sync writes on the install path.
+ *  M2: the Wan 2.2 files live in Models/video/<tool-id>/ (the HF snapshot
+ *  dir), so ComfyUI must also see that dir as a VAE path and as a text
+ *  encoder path — otherwise VAELoader and CLIPLoader (type wan) cannot
+ *  find Wan2.2_VAE.pth and models_t5_umt5-xxl-enc-bf16.pth. The yaml
+ *  parser splits a value on newlines, so the vae value uses a literal
+ *  block scalar (|) to carry both paths; diffusion_models already
+ *  pointed at Models/video (recursive search finds the snapshot dir). */
 async function writeModelPaths(root) {
   const er = engineRoot(root);
   const M = (c) => path.join(root, 'Models', c);
@@ -366,7 +373,10 @@ comfyui:
   checkpoints: ${M('image')}
   diffusion_models: ${M('video')}
   loras: ${path.join(M('image'), 'loras')}
-  vae: ${path.join(M('image'), 'vae')}
+  vae: |
+    ${path.join(M('image'), 'vae')}
+    ${M('video')}
+  text_encoders: ${M('video')}
   embeddings: ${path.join(M('image'), 'embeddings')}
   controlnet: ${path.join(M('image'), 'controlnet')}
   upscale_models: ${M('fix')}

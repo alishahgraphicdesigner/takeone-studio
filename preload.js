@@ -48,6 +48,13 @@ contextBridge.exposeInMainWorld('takeone', {
   deleteQuickImage: (root, imagePath) => ipcRenderer.invoke('takeone:deleteQuickImage', root, imagePath),
   comfyHistory: (promptId) => ipcRenderer.invoke('takeone:comfyHistory', promptId),
   comfyInterrupt: () => ipcRenderer.invoke('takeone:comfyInterrupt'),
+  // M2: Video Studio (Wan 2.2 TI2V-5B).
+  comfyGenerateVideo: (root, params) => ipcRenderer.invoke('takeone:comfyGenerateVideo', root, params),
+  comfyFetchVideoOutput: (root, promptId) => ipcRenderer.invoke('takeone:comfyFetchVideoOutput', root, promptId),
+  comfyGenerateVideoPack: (root, params) => ipcRenderer.invoke('takeone:comfyGenerateVideoPack', root, params),
+  saveVideoThumbnail: (root, projectId, baseName, dataUrl) => ipcRenderer.invoke('takeone:saveVideoThumbnail', root, projectId, baseName, dataUrl),
+  saveVideoContactSheet: (root, projectId, dataUrl) => ipcRenderer.invoke('takeone:saveVideoContactSheet', root, projectId, dataUrl),
+  videoVramCheck: (root) => ipcRenderer.invoke('takeone:videoVramCheck', root),
   brainLearn: (root, context, action, reward) => ipcRenderer.invoke('takeone:brainLearn', root, context, action, reward),
   brainSuggest: (root, context, topK) => ipcRenderer.invoke('takeone:brainSuggest', root, context, topK),
   checkOnline: () => ipcRenderer.invoke('takeone:checkOnline'),

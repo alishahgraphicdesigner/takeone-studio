@@ -95,6 +95,7 @@
     renderMoves();
     renderTools();
     renderQuickGen();
+    renderVideoPanel();
   }
 
   // M1: Quick Generate lives in the Studio view ALWAYS — not only in the
@@ -352,6 +353,316 @@
   }
 
 
+  // M2: Video Studio panel — Wan 2.2 TI2V-5B, text-to-video and
+  // image-to-video from a Library image. Lives in the Studio view ALWAYS
+  // (same lesson as M1's Quick Generate: renderAll AND renderNoProject
+  // both call it, guarded by #videoPanel). The Models page still shows
+  // "Coming soon" until the first GPU render goes green (M2.6); this
+  // panel is the trial path — it says so plainly and lets the model
+  // download here, because without that download the trial can never
+  // happen. Results land in the open project's videos/ (or the Quick
+  // Generate project), so the Library shows them like any asset.
+  function renderVideoPanel() {
+    if (document.getElementById('videoPanel')) return;
+    const host = $('#studioBody');
+    if (!host) return;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `<div class="quickgen" id="videoPanel" style="margin-top:32px; padding:20px; border:1px solid var(--line); border-radius:12px; background:var(--panel);">
+      <h3 style="margin:0 0 8px;">🎬 Video Studio <span class="muted small">(Wan 2.2 TI2V-5B)</span></h3>
+      <p class="muted small" id="videoStatusNote" style="margin:0 0 12px;">Checking video memory…</p>
+      <textarea id="videoPrompt" rows="1" placeholder="A slow aerial shot over ocean waves at sunset…" style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:#fff; resize:none; overflow:hidden; font:inherit;"></textarea>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:12px 0;">
+        <label class="muted small">Mode <select id="videoMode"><option value="t2v">Text → Video</option><option value="i2v">Image → Video</option></select></label>
+        <label class="muted small" id="videoImageWrap" style="display:none;">Image <select id="videoImage"><option value="">Loading Library images…</option></select></label>
+        <label class="muted small">Length <select id="videoDur"><option value="2">2s</option><option value="4">4s</option></select></label>
+        <label class="muted small">Size <select id="videoRes"><option value="480p">480p</option><option value="720p">720p</option></select></label>
+        <label class="muted small">Seed <input id="videoSeed" placeholder="Random" inputmode="numeric" style="width:90px; padding:6px 8px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:#fff;" /></label>
+        <button class="primary" id="videoGenBtn" disabled>Generate video</button>
+        <button class="ghost" id="videoPackBtn" disabled>Run video Ali pack (2 prompts × 2 settings)</button>
+      </div>
+      <div id="videoDl" class="muted small"></div>
+      <div id="videoOut" class="muted small"></div>
+    </div>`;
+    host.appendChild(wrap.firstElementChild);
+    const vPrompt = $('#videoPrompt');
+    const vGenBtn = $('#videoGenBtn');
+    const vPackBtn = $('#videoPackBtn');
+    const vOut = $('#videoOut');
+    const vDl = $('#videoDl');
+    const vAutoGrow = () => {
+      if (!vPrompt) return;
+      vPrompt.style.height = 'auto';
+      vPrompt.style.height = Math.min(vPrompt.scrollHeight, 400) + 'px';
+    };
+    if (vPrompt) vPrompt.addEventListener('input', vAutoGrow);
+    let vBusy = false;
+    let vInstalled = false;
+    let vDlPoll = null;
+    async function refreshVideoState() {
+      try {
+        const vc = await window.takeone.videoVramCheck(root);
+        const note = $('#videoStatusNote');
+        if (note) note.textContent = (vc && vc.text) || '';
+      } catch { /* VRAM note optional */ }
+      try {
+        const st = await window.takeone.toolStates(root);
+        const vs = st && st['video-studio'];
+        if (vs && vs.state === 'installed') {
+          vInstalled = true;
+          if (vGenBtn) vGenBtn.disabled = false;
+          if (vPackBtn) vPackBtn.disabled = false;
+          if (vDl) vDl.innerHTML = '<span>Video Studio is installed. Trial status: its first real clip on a GPU PC has not run yet — if a generation fails, that failure is useful evidence, not a surprise.</span>';
+        } else {
+          vInstalled = false;
+          if (vGenBtn) vGenBtn.disabled = true;
+          if (vPackBtn) vPackBtn.disabled = true;
+          const prog = vs && vs.state === 'installing' ? ` — downloading… ${Math.round(vs.progress || 0)}%` : '';
+          const err = vs && vs.error ? ` <span>Last attempt: ${esc(vs.error)}</span>` : '';
+          if (vDl) vDl.innerHTML = `<span>Video Studio isn't installed yet (~34 GB). Trial status: its first real clip on a GPU PC has not run yet — the download below is how that trial happens; the Models page still shows Coming soon until it goes green.${prog}${err}</span><br><button class="btn small" id="videoDlBtn">Download video model</button>`;
+          const dlBtn = document.getElementById('videoDlBtn');
+          if (dlBtn) dlBtn.addEventListener('click', async () => {
+            dlBtn.disabled = true;
+            try { await window.takeone.dlStart('video-studio', root); } catch { /* state poll shows it */ }
+            if (vDlPoll) clearInterval(vDlPoll);
+            vDlPoll = setInterval(refreshVideoState, 5000);
+          });
+        }
+      } catch { /* state optional */ }
+    }
+    refreshVideoState();
+    const vMode = $('#videoMode');
+    const vImgWrap = $('#videoImageWrap');
+    const vImgSel = $('#videoImage');
+    if (vMode) vMode.addEventListener('change', async () => {
+      const isI2V = vMode.value === 'i2v';
+      if (vImgWrap) vImgWrap.style.display = isI2V ? '' : 'none';
+      if (!isI2V || !vImgSel || vImgSel.dataset.loaded) return;
+      try {
+        const pr = await window.takeone.listProjects(root);
+        const opts = [];
+        for (const p of (pr.projects || [])) {
+          const la = await window.takeone.listAssets(root, p.id);
+          for (const a of ((la && la.assets) || [])) {
+            if (a.type === 'images' && opts.length < 100) opts.push({ v: `${p.id}|${a.rel}`, label: `${p.name} / ${a.fileName}` });
+          }
+        }
+        vImgSel.innerHTML = opts.length
+          ? opts.map((o) => `<option value="${esc(o.v)}">${esc(o.label)}</option>`).join('')
+          : '<option value="">No Library images yet — generate one with Quick Generate first.</option>';
+        vImgSel.dataset.loaded = '1';
+      } catch {
+        if (vImgSel) vImgSel.innerHTML = '<option value="">Could not list Library images.</option>';
+      }
+    });
+    function videoCard(f, promptText, metaLine) {
+      const out = $('#videoOut');
+      if (!out) return;
+      const el = document.createElement('div');
+      el.style.cssText = 'margin-top:12px; padding:12px; border:1px solid var(--line); border-radius:12px;';
+      el.innerHTML = `<video controls preload="metadata" style="max-width:100%; border-radius:8px; background:#000;"><source src="${esc(f.dataUrl)}" type="video/mp4" /></video>` +
+        `<div style="margin-top:8px;"><b>Saved to Library</b> <span class="muted small">${esc(metaLine)} · ${esc(f.path)}</span></div>` +
+        `<div class="row" style="margin-top:8px;"><button class="btn small" data-act="copy">Copy prompt</button>` +
+        `<button class="btn small" data-act="folder">Open folder</button></div>` +
+        `<div class="muted small" data-thumb></div>`;
+      el.querySelector('[data-act="copy"]').addEventListener('click', async (ev) => {
+        const btn = ev.currentTarget;
+        try { await window.takeone.copyText(promptText); btn.textContent = 'Copied!'; }
+        catch { btn.textContent = 'Copy failed'; }
+        setTimeout(() => { btn.textContent = 'Copy prompt'; }, 2000);
+      });
+      el.querySelector('[data-act="folder"]').addEventListener('click', () => window.takeone.showInFolder(f.path));
+      out.appendChild(el);
+      // First-frame thumbnail (canvas from the playing preview) next to
+      // the mp4. Failing here never loses the video — it just skips.
+      try {
+        const vid = el.querySelector('video');
+        const grab = async () => {
+          try {
+            vid.muted = true;
+            await vid.play().catch(() => {});
+            await new Promise((res) => setTimeout(res, 500));
+            vid.pause();
+            const canvas = document.createElement('canvas');
+            const w = Math.min(vid.videoWidth || 640, 640);
+            const h = vid.videoHeight ? Math.round(vid.videoHeight * (w / vid.videoWidth)) : 360;
+            canvas.width = w; canvas.height = h;
+            canvas.getContext('2d').drawImage(vid, 0, 0, w, h);
+            const base = f.fileName.replace(/\.mp4$/i, '');
+            const tr = await window.takeone.saveVideoThumbnail(root, f.projectId, base, canvas.toDataURL('image/png'));
+            const th = el.querySelector('[data-thumb]');
+            if (th) th.textContent = tr && tr.ok ? 'Thumbnail saved next to the video.' : 'Thumbnail unavailable — the video itself is saved.';
+          } catch { /* thumbnail optional */ }
+        };
+        if (vid.readyState >= 2) grab();
+        else vid.addEventListener('loadeddata', grab, { once: true });
+      } catch { /* thumbnail optional */ }
+    }
+    async function videoPollOne(pid, cancelState, statusEl, label) {
+      for (let i = 0; i < 360; i++) {
+        await new Promise((res) => setTimeout(res, 5000));
+        if (cancelState.cancelled) return null;
+        const f = await window.takeone.comfyFetchVideoOutput(root, pid);
+        if (f && f.ok) return f;
+        if (f && !f.notFinished) return { __error: f.error || 'failed' };
+        statusEl.textContent = `${label} ${Math.floor((i + 1) * 5 / 60)}m ${((i + 1) * 5) % 60}s`;
+      }
+      return { __timeout: true };
+    }
+    function videoStatus(out) {
+      out.innerHTML = '<div id="videoStatus"><span id="videoStatusText">Starting the engine…</span> <span id="videoStatusBtn"></span></div><div id="videoCards"></div>';
+      return document.getElementById('videoStatusText');
+    }
+    if (vGenBtn) vGenBtn.addEventListener('click', async () => {
+      const prompt = (vPrompt || {}).value || '';
+      if (!prompt.trim()) { if (vOut) vOut.textContent = 'Pehle prompt likhein.'; return; }
+      if (!vInstalled) { if (vOut) vOut.textContent = 'Video Studio is not installed yet — download it above first.'; return; }
+      vGenBtn.disabled = true;
+      vBusy = true;
+      const cancelState = { cancelled: false };
+      try {
+        const statusEl = videoStatus(vOut);
+        statusEl.textContent = 'Starting the engine…';
+        document.getElementById('videoStatusBtn').innerHTML = '<button class="btn small ghost2" id="videoCancel">Cancel</button>';
+        document.getElementById('videoCancel').addEventListener('click', async () => {
+          cancelState.cancelled = true;
+          try { await window.takeone.comfyInterrupt(); } catch { /* best effort */ }
+        });
+        const mode = (vMode || {}).value || 't2v';
+        let imageRel = null, imageProjectId = null;
+        if (mode === 'i2v') {
+          const sel = ((vImgSel || {}).value || '');
+          if (!sel || !sel.includes('|')) { statusEl.textContent = 'Image → Video needs a Library image — pick one above.'; return; }
+          [imageProjectId, imageRel] = sel.split('|');
+        }
+        const dur = parseInt(((($('#videoDur') || {}).value || '2')), 10) || 2;
+        const res = ((($('#videoRes') || {}).value || '480p'));
+        const seedRaw = ((($('#videoSeed') || {}).value || '').trim());
+        const r = await window.takeone.comfyGenerateVideo(root, {
+          prompt: prompt.trim(), projectId, imageRel, imageProjectId,
+          duration: dur, resolution: res, seed: seedRaw,
+        });
+        if (!r.ok) {
+          if (r.engineMissing) statusEl.textContent = 'The AI engine isn\u2019t installed yet — it\u2019s a one-time setup.';
+          else if (r.action === 'video-download') { statusEl.textContent = r.error; refreshVideoState(); }
+          else statusEl.textContent = 'Error: ' + (r.error || r.reason || 'failed');
+          return;
+        }
+        statusEl.textContent = 'Generating video… (this takes minutes — a short clip first is the honest test)';
+        const f = await videoPollOne(r.promptId, cancelState, statusEl, 'Generating video —');
+        if (cancelState.cancelled || !f) { statusEl.textContent = 'Cancelled.'; return; }
+        if (f.__error) { statusEl.textContent = 'Error: ' + f.__error; return; }
+        if (f.__timeout) { statusEl.textContent = 'Timed out waiting for the engine (30 minutes).'; return; }
+        videoCard(f, prompt.trim(), `${res} · ${dur}s · seed ${r.seed}`);
+        statusEl.textContent = 'Done — video saved to the Library.';
+      } catch (e) {
+        if (vOut) vOut.textContent = 'Error: ' + (e.message || e);
+      } finally {
+        vGenBtn.disabled = false;
+        vBusy = false;
+      }
+    });
+    // M2.6: the video Ali pack — 2 prompts x 2 settings, one seed. After
+    // all 4, the renderer draws first frames into a 2x2 contact sheet
+    // and saves it (contact_sheet_video.png) next to the clips.
+    if (vPackBtn) vPackBtn.addEventListener('click', async () => {
+      if (!vInstalled) { if (vOut) vOut.textContent = 'Video Studio is not installed yet — download it above first.'; return; }
+      vPackBtn.disabled = true;
+      vBusy = true;
+      const cancelState = { cancelled: false };
+      try {
+        const statusEl = videoStatus(vOut);
+        statusEl.textContent = 'Starting the engine for the video Ali pack…';
+        document.getElementById('videoStatusBtn').innerHTML = '<button class="btn small ghost2" id="videoPackCancel">Cancel</button>';
+        document.getElementById('videoPackCancel').addEventListener('click', async () => {
+          cancelState.cancelled = true;
+          try { await window.takeone.comfyInterrupt(); } catch { /* best effort */ }
+        });
+        const seedRaw = ((($('#videoSeed') || {}).value || '').trim());
+        const r = await window.takeone.comfyGenerateVideoPack(root, { seed: seedRaw, projectId });
+        if (!r.ok) {
+          if (r.engineMissing) statusEl.textContent = 'The AI engine isn\u2019t installed yet — it\u2019s a one-time setup.';
+          else statusEl.textContent = 'Error: ' + (r.error || r.reason || 'failed');
+          return;
+        }
+        statusEl.textContent = `Video Ali pack queued — 4 clips, one seed (${r.seed}). This takes a while; each clip renders in turn.`;
+        const results = [];
+        for (let ji = 0; ji < r.jobs.length; ji++) {
+          const job = r.jobs[ji];
+          if (cancelState.cancelled) { statusEl.textContent = 'Cancelled.'; return; }
+          const f = await videoPollOne(job.promptId, cancelState, statusEl, `Video Ali pack ${ji + 1}/4 —`);
+          if (cancelState.cancelled) { statusEl.textContent = 'Cancelled.'; return; }
+          results.push(f && f.ok ? { ...job, dataUrl: f.dataUrl, path: f.path, projectId: f.projectId } : { ...job, dataUrl: null });
+          statusEl.textContent = `Video Ali pack: ${ji + 1}/4 done.`;
+        }
+        const firstFrame = (dataUrl) => new Promise((resolve) => {
+          try {
+            const vid = document.createElement('video');
+            vid.muted = true; vid.preload = 'auto'; vid.src = dataUrl;
+            const done = (ok) => {
+              try {
+                const canvas = document.createElement('canvas');
+                canvas.width = vid.videoWidth || 640; canvas.height = vid.videoHeight || 360;
+                if (ok) canvas.getContext('2d').drawImage(vid, 0, 0, canvas.width, canvas.height);
+                resolve(ok ? canvas : null);
+              } catch { resolve(null); }
+            };
+            const timer = setTimeout(() => done(false), 30000);
+            vid.addEventListener('loadeddata', async () => {
+              try { await vid.play().catch(() => {}); } catch {}
+              setTimeout(() => { clearTimeout(timer); vid.pause(); done(true); }, 500);
+            }, { once: true });
+            vid.addEventListener('error', () => { clearTimeout(timer); done(false); }, { once: true });
+          } catch { resolve(null); }
+        });
+        const CELL = 448;
+        const canvas = document.createElement('canvas');
+        canvas.width = CELL * 2; canvas.height = CELL * 2;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#111'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        for (let i = 0; i < 4; i++) {
+          const res = results[i] || {};
+          const cx = (i % 2) * CELL, cy = Math.floor(i / 2) * CELL;
+          const frame = res.dataUrl ? await firstFrame(res.dataUrl) : null;
+          if (frame) {
+            const scale = Math.max(CELL / frame.width, CELL / frame.height);
+            const dw = frame.width * scale, dh = frame.height * scale;
+            ctx.drawImage(frame, cx + (CELL - dw) / 2, cy + (CELL - dh) / 2, dw, dh);
+          } else {
+            ctx.fillStyle = '#333'; ctx.fillRect(cx, cy, CELL, CELL);
+            ctx.fillStyle = '#999'; ctx.font = '24px sans-serif';
+            ctx.fillText('failed', cx + 20, cy + 40);
+          }
+          ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(cx, cy + CELL - 28, CELL, 28);
+          ctx.fillStyle = '#fff'; ctx.font = '16px sans-serif';
+          ctx.fillText(`${res.resolution || ''} ${res.duration || ''}s`, cx + 8, cy + CELL - 8);
+        }
+        const sheetUrl = canvas.toDataURL('image/png');
+        const sr = await window.takeone.saveVideoContactSheet(root, r.projectId, sheetUrl);
+        const cards = document.getElementById('videoCards');
+        if (cards) {
+          const el = document.createElement('div');
+          el.style.cssText = 'margin-top:12px; padding:12px; border:1px solid var(--line); border-radius:12px;';
+          el.innerHTML = `<img src="${esc(sheetUrl)}" style="max-width:100%; border-radius:8px;" />` +
+            `<div style="margin-top:8px;"><b>Video Ali pack contact sheet</b> <span class="muted small">${sr && sr.ok ? esc(sr.path) : 'could not be saved — the sheet above is still yours to screenshot'}</span></div>` +
+            (sr && sr.ok ? `<button class="btn small" id="videoSheetFolder">Open folder</button>` : '');
+          cards.appendChild(el);
+          const sf = document.getElementById('videoSheetFolder');
+          if (sf) sf.addEventListener('click', () => window.takeone.showInFolder(sr.path));
+        }
+        const failed = results.filter((x) => !x.dataUrl).length;
+        statusEl.textContent = failed
+          ? `Video Ali pack done — ${4 - failed}/4 saved. ${failed} failed.`
+          : 'Video Ali pack done — 4/4 saved.';
+      } catch (e) {
+        if (vOut) vOut.textContent = 'Error: ' + (e.message || e);
+      } finally {
+        vPackBtn.disabled = false;
+        vBusy = false;
+      }
+    });
+  }
+
+
   // ------------------------------------------------------- empty state
   // Honest and alive: no fake projects, no dead ends, no black screens.
   // If no AI tools are installed yet, the first CTA leads to Models —
@@ -449,6 +760,7 @@
       b.addEventListener('click', () => switchView('models')));
     $('#npCreate').addEventListener('click', newProjectDialog);
     renderQuickGen();
+    renderVideoPanel();
     $('#npScript').addEventListener('click', async () => {
       const name = await promptModal('New project', 'Project name');
       if (name === null) return;

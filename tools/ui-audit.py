@@ -257,6 +257,16 @@ def main():
                     extra = {}
                     if view == "studio":
                         extra["prompt"] = page.evaluate(PROMPT_JS)
+                        # M2: the Video panel lives in Studio too — same
+                        # bar as Quick Generate: multi-line prompt
+                        # textarea + Generate button present, no stub.
+                        extra["video"] = page.evaluate(
+                            "() => { const p = document.querySelector('#videoPrompt');"
+                            " const g = document.querySelector('#videoGenBtn');"
+                            " const k = document.querySelector('#videoPackBtn');"
+                            " return { panel: !!document.querySelector('#videoPanel'),"
+                            " promptTextarea: !!p && p.tagName === 'TEXTAREA',"
+                            " genBtn: !!g, packBtn: !!k }; }")
                     if view == "library":
                         extra["thumb"] = page.evaluate(
                             "() => [...document.querySelectorAll('.projthumb')].some((i) => i.naturalWidth > 0)")
@@ -276,6 +286,10 @@ def main():
                         view_fail.append(f"truncated button text: {checks['buttons'][:5]}")
                     if view == "studio" and not extra["prompt"]["ok"]:
                         view_fail.append(f"prompt textarea check failed: {extra['prompt']}")
+                    if view == "studio":
+                        v = extra["video"]
+                        if not (v["panel"] and v["promptTextarea"] and v["genBtn"] and v["packBtn"]):
+                            view_fail.append(f"video panel incomplete: {v}")
                     if view == "library" and not extra["thumb"]:
                         view_fail.append("no Library card thumbnail rendered (naturalWidth 0)")
                     if view == "settings" and not (extra["dataFolder"] and extra["diagnosticsBtn"]):

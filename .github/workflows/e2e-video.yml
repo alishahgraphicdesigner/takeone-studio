@@ -1,0 +1,69 @@
+name: e2e-video
+# M2.5: "Video v1 validates on CI" (Windows runner, CPU, no GPU).
+# Engine ko main/engine.js ki functions se install karta hai (wahi code
+# jo app chalayegi), ComfyUI --cpu par shared createEngineComfy() start
+# path se, comfy-workflows.js ka shared wanVideo builder: T2V + I2V
+# queue -> prompt_id (NOT 400) -> interrupt. Koi 34 GB download NAHI:
+# loader files 1-byte VALIDATION STAND-INS hain (e2e-video.js header
+# mein wazeh) — queue validator combo membership check karta hai, is
+# liye bina un ke queue WO-41 ki tarah 400 deta. Asli render M2.6 hai
+# (Ali ke GPU par) aur us tak Not Tested rehta hai.
+# TAKEONE_SKIP_GPU_CHECK=1: runner par NVIDIA GPU nahi (failure kinds unit-tested).
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e-video:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      # Same step as e2e-image: installEngine needs the shipped python at <root>/.python.
+      - name: Place shipped Python at <root>/.python
+        run: |
+          $tar = "resources/python-3.11.17-windows-x86_64-install_only_stripped.tar.gz"
+          if (-not (Test-Path $tar)) { Write-Error "SHIPPED PYTHON TARBALL MISSING: $tar"; exit 1 }
+          $e2eRoot = Join-Path $PWD ".e2e-root"
+          New-Item -ItemType Directory -Force -Path $e2eRoot | Out-Null
+          tar -xzf $tar -C $e2eRoot
+          $inner = Get-ChildItem $e2eRoot -Directory | Where-Object { Test-Path (Join-Path $_.FullName "python.exe") } | Select-Object -First 1
+          if (-not $inner) {
+            Write-Host "TREE:"; Get-ChildItem $e2eRoot | Format-Table -AutoSize
+            Write-Error "SHIPPED PYTHON LAYOUT: python.exe not found after extract"; exit 1
+          }
+          New-Item -ItemType Directory -Force -Path (Join-Path $e2eRoot ".python") | Out-Null
+          Get-ChildItem $inner.FullName | Move-Item -Destination (Join-Path $e2eRoot ".python") -Force
+          & (Join-Path $e2eRoot ".python/python.exe") --version
+          echo "TAKEONE_E2E_ROOT=$e2eRoot" >> $env:GITHUB_ENV
+
+      - name: Check M2 video modules exist
+        run: |
+          node -e "const e = require('./main/engine.js'); for (const f of ['installEngine','engineRoot','venvPython']) { if (typeof e[f] !== 'function') { throw new Error('main/engine.js missing function: ' + f); } } const c = require('./main/comfy.js'); if (typeof c.createEngineComfy !== 'function') { throw new Error('main/comfy.js missing createEngineComfy'); } const w = require('./main/comfy-workflows.js'); if (typeof w.wanVideo !== 'function') { throw new Error('main/comfy-workflows.js missing wanVideo (M2.3)'); } const v = require('./main/video-model.js'); if (typeof v.videoLoaderNames !== 'function') { throw new Error('main/video-model.js missing videoLoaderNames (M2)'); } console.log('M2 video modules OK')"
+
+      - name: Run end-to-end video validation (CPU, interrupt after queue)
+        env:
+          TAKEONE_SKIP_GPU_CHECK: "1"
+          TAKEONE_ARIA2: ${{ github.workspace }}/resources/aria2c.exe
+        run: |
+          node tools/e2e-video.js 2>&1 | Tee-Object -FilePath e2e-video.log
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "RAW e2e-video.log tail:"; Get-Content e2e-video.log -Tail 40
+            Write-Error "E2E VIDEO FAILED (raw log above)"
+            exit 1
+          }
+        timeout-minutes: 75
+
+      - name: Upload validation log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-video-log
+          path: e2e-video.log
+          if-no-files-found: error

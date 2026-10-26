@@ -70,26 +70,46 @@ const CATALOG = [
   },
   {
     id: 'video-studio', group: 'Video',
-    friendlyName: 'Video Studio', technical: 'Wan 2.1 1.3B',
+    friendlyName: 'Video Studio', technical: 'Wan 2.2 TI2V-5B',
     installType: 'hf',
-    unavailable: 'Not available yet: no video workflow exists — main/comfy-workflows.js has only the single SDXL text-to-image workflow; there is no Wan 2.1 run path in the app. Withheld until a real video workflow is implemented and verified.',
-    unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.', repo: 'Wan-AI/Wan2.1-T2V-1.3B',
-    commit: '37ec512624d61f7aa208f7ea8140a131f93afc9a',
+    // M2: the entry is complete (files[] + pinned commit + license) but
+    // STAYS unavailable until the CI validation (M2.5) AND the first GPU
+    // render — the video Ali pack (M2.6) — are both green. The Models
+    // page keeps showing "Coming soon" with no Install button until then;
+    // the Studio Video panel is the trial path (it can download the
+    // model itself and says plainly that the first GPU render is unproven).
+    // NOTE: video-pro already lists this same model (its own tier entry);
+    // it is untouched here — dedup is Claude's call, not a silent edit.
+    unavailable: 'Not available yet: the video workflow is built and CI-validated, but no real clip has rendered on a GPU PC yet (the video Ali pack, M2.6, is still to run). Withheld until that first GPU render is green.',
+    unavailableUser: 'Coming soon. Video is built and checked, but its first real clip on a PC like yours has not run yet. Nothing for you to do.', repo: 'Wan-AI/Wan2.2-TI2V-5B',
+    commit: '921dbaf3f1674a56f47e83fb80a34bac8a8f203e',
     files: [
       { path: 'models_t5_umt5-xxl-enc-bf16.pth', bytes: 11361920418, sha256: '7cace0da2b446bbbbc57d031ab6cf163a3d59b366da94e5afe36745b746fd81d' },
-      { path: 'diffusion_pytorch_model.safetensors', bytes: 5676070424, sha256: '96b6b242ca1c2f24e9d02cd6596066fab6d310e2d7538f33ae267cb18d957e8f' },
-      { path: 'Wan2.1_VAE.pth', bytes: 507609880, sha256: '38071ab59bd94681c686fa51d75a1968f64e470262043be31f7a094e442fd981' },
+      { path: 'diffusion_pytorch_model-00002-of-00003.safetensors', bytes: 9995661736, sha256: '09ec5ef720d8396f6cfa51fbdcbdb2327e37722afd6e89fd38f1e7e5e782c283' },
+      { path: 'diffusion_pytorch_model-00001-of-00003.safetensors', bytes: 9825014472, sha256: '720b06c4ade5e87c1246bba8ac95b664c638749cd9b102cf84d823bb44c026a1' },
+      { path: 'Wan2.2_VAE.pth', bytes: 2818839170, sha256: '20eb789667fa5e60e7516bf509512f6cb61f01b0aa0695eadaea930c13892b36' },
+      { path: 'diffusion_pytorch_model-00003-of-00003.safetensors', bytes: 178558176, sha256: '6306f7894c345de9093ad588771c2abfaeb668a81f7a6d9a918bd26ba3568e49' },
       { path: 'google/umt5-xxl/tokenizer.json', bytes: 16837417, sha256: '6e197b4d3dbd71da14b4eb255f4fa91c9c1f2068b20a2de2472967ca3d22602b' },
       { path: 'google/umt5-xxl/spiece.model', bytes: 4548313, sha256: 'e3909a67b780650b35cf529ac782ad2b6b26e6d1f849d3fbb6a872905f452458' },
       { path: 'examples/i2v_input.JPG', bytes: 250628, sha256: '077e3d965090c9028c69c00931675f42e1acc815c6eb450ab291b3b72d211a8e' },
+      { path: 'diffusion_pytorch_model.safetensors.index.json', bytes: 72865, sha256: 'bfa2337f1163e195d24151a72298daf34a620543898109be47e414c8daa5b3fe' },
       { path: 'google/umt5-xxl/tokenizer_config.json', bytes: 61728, sha256: 'ed9a3a8b0faa71a70a32847e0435fe036e6e112d4df4edb7bb48a921e344dc05' },
-      { path: 'LICENSE.txt', bytes: 11357, sha256: 'c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4' },
       { path: 'google/umt5-xxl/special_tokens_map.json', bytes: 6623, sha256: '7b8a9f5040adb67b5805abdfd42c1f8d0f3d0e711f10726580eb3789cd0ad61d' },
-      { path: 'config.json', bytes: 249, sha256: 'ab37994c43740513f94b3ba6233a784035a67b43c8cde83c8f31aa90468c67ce' },
+      { path: '.msc', bytes: 507, sha256: 'e08718041f55dc3bfa49e18e8228c49bb760c477f2501214361326327e2f8c4f' },
+      { path: 'config.json', bytes: 251, sha256: 'd1fea36899d00c2501b836c13ad65af56e2f9529ba622e50886d3f5c3e6c02bc' },
+      { path: 'configuration.json', bytes: 43, sha256: 'a6b66993e9da0feaba8d42d06b21ad9cfaf7d8b591f32fd639ae35b7f5d2d859' },
+      { path: '.mv', bytes: 36, sha256: '2b49c3a970f900cd3e1cbd1c68ca5efccaba49cdb121eeca5c51b53173558895' },
     ],
     url: null, fileName: null, sha256: null,
-    sizeMB: 16753, sizeBytes: 17567317037, vramMB: 8400,
-    license: 'Apache-2.0', licenseNote: 'Free for commercial use.',
+    sizeMB: 32617, sizeBytes: 34201772383,
+    // M2: 16 GB target, NOT the 24 GB tier (video-pro keeps tier24 alone —
+    // a test enforces exactly one tier24 tool). 16 GB passes the 0.8 gate
+    // on Ali's 16 GB card (0.8 x 16384 = 13107 <= 16303) while blocking
+    // far smaller cards. Honest conflict, stated in the panel's VRAM
+    // check: video-pro lists 24 GB for full quality; 16 GB runs with
+    // offloading and short clips, unproven until the first GPU render.
+    vramMB: 16384,
+    license: 'Apache-2.0', licenseNote: 'Free for commercial use — no payment, no permission needed. You can sell videos made with it. The model files come from Wan-AI; TakeOne does not own them.',
     category: 'video',
     why: 'Text-to-video and image-to-video. The primary video engine.',
   },

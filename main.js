@@ -1053,14 +1053,19 @@ function wireIPC() {
   // function tools/e2e-image.js uses. The old getComfy built its own
   // ComfyManager WITHOUT the extra_model_paths config, which is exactly
   // why ComfyUI's checkpoint list was empty on Ali's PC.
-  const { createEngineComfy, MODEL_NOT_VISIBLE_MSG } = require('./main/comfy.js');
-  const { sdxlLightningTxt2Img, aspectDims, DEFAULT_NEGATIVE, presetParams, buildAliPackJobs } = require('./main/comfy-workflows.js');
+  const { createEngineComfy, MODEL_NOT_VISIBLE_MSG, VIDEO_NOT_VISIBLE_MSG } = require('./main/comfy.js');
+  const { sdxlLightningTxt2Img, aspectDims, DEFAULT_NEGATIVE, presetParams, buildAliPackJobs,
+    wanVideo, videoDims, videoFrames, VIDEO_DEFAULTS, DEFAULT_VIDEO_NEGATIVE, buildVideoAliPackJobs } = require('./main/comfy-workflows.js');
+  const videoModel = require('./main/video-model.js');
   const engine = require('./main/engine.js');
   let comfyMgr = null;
   // WO-43: per-prompt sidecar facts for the Library save. The renderer knows
   // the prompt text, but only main knows the seed + model it queued — so
   // generate stashes them here keyed by promptId, and fetchOutput reads them.
   const qgMeta = new Map();
+  // M2: same stash for video prompts (queuedAt matters: main picks the
+  // newest mp4 in ComfyUI/output/video written after queue time).
+  const videoMeta = new Map();
   function getComfy(root) {
     if (!comfyMgr) {
       comfyMgr = createEngineComfy({
@@ -1336,6 +1341,192 @@ function wireIPC() {
   ipcMain.handle('takeone:comfyInterrupt', async () => {
     if (!comfyMgr) return { ok: false, error: 'Not running.' };
     return comfyMgr.interrupt();
+  });
+
+  // ── M2: Video Studio (Wan 2.2 TI2V-5B) ──
+  // Shared guards for single + pack generation: engine ready, ComfyUI
+  // running, video-studio installed, merged diffusion file present,
+  // and — WO-41.3-style preflight — the three loader lists in
+  // /object_info actually contain the files. A missing file fails HERE
+  // in plain words, not after a long queue.
+  async function videoGuards(r) {
+    try { await engine.assertEngineReady(r); }
+    catch (err) { return { ok: false, engineMissing: true, error: err.message }; }
+    const mgr = getComfy(r);
+    if (!mgr.isRunning()) {
+      const st = await mgr.start();
+      if (!st.ok) return st;
+    }
+    const tool = toolById('video-studio');
+    if (!tool || !(await toolInstalled(r, tool))) {
+      return { ok: false, error: "Video Studio isn't installed yet. Open the Video panel and download it.", action: 'video-download' };
+    }
+    if (!(await videoModel.mergedReady(r))) {
+      // merge-shards.py is plain stdlib Python: the engine venv works,
+      // and the shipped Python is the fallback (no torch needed at all).
+      let py = null;
+      try { py = engine.venvPython(r); } catch { /* fallback below */ }
+      if (!py || !fs.existsSync(py)) {
+        try { py = depsMod.pythonExe(r); } catch { py = null; }
+      }
+      if (!py) return { ok: false, error: 'No Python is ready, so the video model cannot be prepared yet.' };
+      const m = await videoModel.ensureMergedVideoModel(r, py);
+      if (!m.ok) return m;
+    }
+    const names = videoModel.videoLoaderNames();
+    const oi = await mgr.getObjectInfo();
+    if (oi.ok && oi.info) {
+      const listOf = (node, field) => {
+        try {
+          const n = oi.info[node];
+          const v = n && n.input && n.input.required && n.input.required[field];
+          return Array.isArray(v) && Array.isArray(v[0]) ? v[0] : [];
+        } catch { return []; }
+      };
+      const unets = listOf('UNETLoader', 'unet_name');
+      const clips = listOf('CLIPLoader', 'clip_name');
+      const vaes = listOf('VAELoader', 'vae_name');
+      if ((unets.length && !unets.includes(names.unet))
+        || (clips.length && !clips.includes(names.clip))
+        || (vaes.length && !vaes.includes(names.vae))) {
+        return { ok: false, modelNotVisible: true, error: VIDEO_NOT_VISIBLE_MSG, action: 'video' };
+      }
+    }
+    return { ok: true, mgr, names };
+  }
+  async function queueVideo(r, mgr, job, projectId) {
+    const workflow = wanVideo(job);
+    const q = await mgr.queuePrompt(workflow);
+    if (!q.ok) {
+      try { global.__takeoneLog && global.__takeoneLog('comfyGenerateVideo raw error: ' + (q.rawError || q.error)); } catch {}
+      const { rawError, ...plain } = q;
+      return plain;
+    }
+    videoMeta.set(q.promptId, {
+      prompt: job.positive, model: 'Wan 2.2 TI2V-5B', seed: job.seed,
+      width: job.width, height: job.height, resolution: job.resolution || null,
+      duration: job.duration ?? null, length: job.length,
+      queuedAt: Date.now(), projectId,
+    });
+    return { ok: true, promptId: q.promptId };
+  }
+  ipcMain.handle('takeone:comfyGenerateVideo', async (e, root, params) => {
+    const r = root || defaultRoot();
+    const g = await videoGuards(r);
+    if (!g.ok) return g;
+    // Resolve the project first: the open Studio project, else the
+    // Quick Generate project (videos/ lives there like images/ do).
+    let projectId = params.projectId || null;
+    if (!projectId) {
+      try { projectId = (await libMod.ensureQuickGenerateProject(r)).id; }
+      catch { return { ok: false, error: "The video couldn't be queued. TakeOne could not open a project to save it in." }; }
+    }
+    // I2V: copy the Library image into ComfyUI/input/ (LoadImage only
+    // reads that dir). The workflow references just the file name.
+    let startImage = null;
+    if (params.imageRel && params.imageProjectId) {
+      try {
+        const src = path.join(r, 'Projects', params.imageProjectId, params.imageRel);
+        const base = path.basename(params.imageRel);
+        const inputDir = path.join(engine.comfyDir(r), 'input');
+        await fs.promises.mkdir(inputDir, { recursive: true });
+        await fs.promises.copyFile(src, path.join(inputDir, base));
+        startImage = base;
+      } catch {
+        return { ok: false, error: "The video couldn't be queued. The chosen image could not be handed to the engine." };
+      }
+    }
+    const [width, height] = videoDims(params.resolution);
+    const seed = Number.isFinite(Number(params.seed)) && params.seed !== '' && params.seed !== null
+      ? Math.floor(Number(params.seed)) : Math.floor(Math.random() * 1000000000);
+    const job = {
+      unet: g.names.unet, clip: g.names.clip, vae: g.names.vae,
+      positive: params.prompt || '',
+      negative: (params.negative || '').trim() ? params.negative : DEFAULT_VIDEO_NEGATIVE,
+      width, height, length: videoFrames(params.duration), seed,
+      steps: VIDEO_DEFAULTS.steps, cfg: VIDEO_DEFAULTS.cfg,
+      sampler_name: VIDEO_DEFAULTS.sampler_name, scheduler: VIDEO_DEFAULTS.scheduler,
+      fps: VIDEO_DEFAULTS.fps, startImage,
+      resolution: params.resolution || '480p', duration: params.duration || 2,
+    };
+    const res = await queueVideo(r, g.mgr, job, projectId);
+    if (!res.ok) return res;
+    return { ok: true, promptId: res.promptId, projectId, width, height, seed, resolution: job.resolution, duration: job.duration };
+  });
+  // M2.6: the video Ali pack — 2 prompts x 2 settings, ONE seed.
+  ipcMain.handle('takeone:comfyGenerateVideoPack', async (e, root, params) => {
+    const r = root || defaultRoot();
+    const g = await videoGuards(r);
+    if (!g.ok) return g;
+    let projectId = params.projectId || null;
+    if (!projectId) {
+      try { projectId = (await libMod.ensureQuickGenerateProject(r)).id; }
+      catch { return { ok: false, error: "The pack couldn't be queued. TakeOne could not open a project to save it in." }; }
+    }
+    const seed = Number.isFinite(Number(params && params.seed)) && params.seed !== '' && params.seed !== null
+      ? Math.floor(Number(params.seed)) : Math.floor(Math.random() * 1000000000);
+    const jobs = buildVideoAliPackJobs(seed);
+    const queued = [];
+    for (const job of jobs) {
+      const full = {
+        unet: g.names.unet, clip: g.names.clip, vae: g.names.vae,
+        positive: job.prompt, negative: job.negative,
+        width: job.width, height: job.height, length: job.length, seed: job.seed,
+        steps: VIDEO_DEFAULTS.steps, cfg: VIDEO_DEFAULTS.cfg,
+        sampler_name: VIDEO_DEFAULTS.sampler_name, scheduler: VIDEO_DEFAULTS.scheduler,
+        fps: VIDEO_DEFAULTS.fps, startImage: null,
+        resolution: job.resolution, duration: job.duration,
+      };
+      const res = await queueVideo(r, g.mgr, full, projectId);
+      if (!res.ok) return res;
+      queued.push({ ...job, promptId: res.promptId });
+    }
+    return { ok: true, seed, projectId, jobs: queued };
+  });
+  ipcMain.handle('takeone:comfyFetchVideoOutput', async (e, root, promptId) => {
+    try {
+      const r = root || defaultRoot();
+      if (!comfyMgr) return { ok: false, error: 'Not running.' };
+      const meta = videoMeta.get(promptId);
+      if (!meta) return { ok: false, error: "The video couldn't be found. It may have been queued before this session started." };
+      const res = await comfyMgr.fetchAndSaveVideoOutput(r, promptId, meta.projectId, meta);
+      if (res.ok) videoMeta.delete(promptId);
+      return res;
+    } catch (err) {
+      return { ok: false, error: "The video was made but couldn't be saved." };
+    }
+  });
+  // M2: first-frame thumbnail (renderer canvas -> PNG) next to the mp4,
+  // and the pack's 2x2 contact sheet. Either failing never loses the video.
+  ipcMain.handle('takeone:saveVideoThumbnail', async (e, root, projectId, baseName, dataUrl) => {
+    try {
+      const r = root || defaultRoot();
+      const m = /^data:image\/png;base64,(.+)$/.exec(String(dataUrl || ''));
+      if (!m) return { ok: false, reason: 'Not a PNG data URL.' };
+      const target = path.join(r, 'Projects', projectId, 'videos', `${baseName}_thumb.png`);
+      await fs.promises.writeFile(target, Buffer.from(m[1], 'base64'));
+      return { ok: true, path: target };
+    } catch { return { ok: false, reason: 'Could not save the thumbnail.' }; }
+  });
+  ipcMain.handle('takeone:saveVideoContactSheet', async (e, root, projectId, dataUrl) => {
+    try {
+      const r = root || defaultRoot();
+      const m = /^data:image\/png;base64,(.+)$/.exec(String(dataUrl || ''));
+      if (!m) return { ok: false, reason: 'Not a PNG data URL.' };
+      const target = path.join(r, 'Projects', projectId, 'contact_sheet_video.png');
+      await fs.promises.writeFile(target, Buffer.from(m[1], 'base64'));
+      return { ok: true, path: target };
+    } catch { return { ok: false, reason: 'Could not save the contact sheet.' }; }
+  });
+  ipcMain.handle('takeone:videoVramCheck', async (e, root) => {
+    try {
+      const r = root || defaultRoot();
+      const cfg = await readConfig(r);
+      const vramMB = (cfg && cfg.pcCheck && cfg.pcCheck.vramMB) ?? null;
+      return { ok: true, vramMB, ...videoModel.videoVramCheck(vramMB) };
+    } catch {
+      return { ok: true, vramMB: null, ...videoModel.videoVramCheck(null) };
+    }
   });
 
   // ── TakeOne Brain (fly-inspired associative learning) ──

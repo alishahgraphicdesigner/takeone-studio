@@ -320,7 +320,25 @@ function listQuickOutputs(root, over) {
   return withTime.slice(0, 5).map((x) => `${x.n} (${fmt(x.size)})`);
 }
 
-/** WO-41: files in <root>/Models/image as "name (size)" lines (max 20 + overflow). */
+/** M2: the last 5 video outputs (mp4 + first-frame thumbnails), newest
+ * first — mirrors listQuickOutputs for the videos/ dir. */
+function listQuickVideos(root, over) {
+  if (over !== undefined) return over;
+  let dir = null;
+  try { dir = require('./library.js').findQuickGenerateProjectDir(root); } catch { dir = null; }
+  if (dir) dir = path.join(dir, 'videos');
+  else dir = path.join(root, 'Library', 'Quick Generate', 'videos');
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((n) => /\.(mp4|png)$/i.test(n)); } catch { return []; }
+  const fmt = (b) => b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : Math.max(1, Math.round(b / 1048576)) + ' MB';
+  const withTime = [];
+  for (const n of names) {
+    try { const st = fs.statSync(path.join(dir, n)); withTime.push({ n, mtime: st.mtimeMs, size: st.size }); }
+    catch { /* unreadable — skip */ }
+  }
+  withTime.sort((a, b) => b.mtime - a.mtime);
+  return withTime.slice(0, 5).map((x) => `${x.n} (${fmt(x.size)})`);
+}
 function listModelFiles(root, over) {
   if (over !== undefined) return over;
   const dir = path.join(root, 'Models', 'image');
@@ -445,6 +463,8 @@ async function buildDiagnosticsReport(root, over = {}) {
   // WO-43: last generation + last Library outputs (injected via over for tests).
   const lastGen = over.lastGeneration !== undefined ? over.lastGeneration : lastGenerationLine(root);
   const quickOuts = over.quickOutputs !== undefined ? over.quickOutputs : listQuickOutputs(root);
+  // M2: last video outputs (Quick Generate project videos/, newest 5).
+  const quickVids = over.quickVideos !== undefined ? over.quickVideos : listQuickVideos(root);
   const report = [
     'TakeOne Studio diagnostics',
     '===========================',
@@ -472,6 +492,9 @@ async function buildDiagnosticsReport(root, over = {}) {
     '--- Quick Generate outputs (last 5, Quick Generate project) ---',
     quickOuts.length ? quickOuts.map((o) => '  ' + o).join('\n') : '  (none saved yet)',
     '',
+    '--- Video outputs (last 5, Quick Generate project videos/) ---',
+    quickVids.length ? quickVids.map((o) => '  ' + o).join('\n') : '  (none saved yet)',
+    '',
     prevSession ? prevSession + '\n' : '',
     '(user names in paths are masked; no passwords or keys are included)',
   ].join('\n');
@@ -485,7 +508,7 @@ module.exports = {
   buildDiagnosticsReport, maskReport, maskUserName, scrubSecrets, stripAnsi,
   tailFile, sessionLogTail, previousSessionSection, comfyLogPath, appendComfyLog, queryGpu,
   querySecurity, queryDefenderBlocks, queryComfyCheckpoints, listModelFiles,
-  lastGenerationLine, listQuickOutputs,
+  lastGenerationLine, listQuickOutputs, listQuickVideos,
   isOneDrivePath, engineSection, storageSection,
   LOG_TAIL_LINES, GPU_QUERY_TIMEOUT_MS,
 };

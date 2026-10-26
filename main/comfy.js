@@ -22,6 +22,7 @@ const START_TIMEOUT_MS = 300000; // 5 min: CPU boot on a slow CI runner (torch i
 
 /** WO-41: the plain message when ComfyUI cannot see the Image Studio model. */
 const MODEL_NOT_VISIBLE_MSG = "Image Studio's model isn't visible to the engine. Open Models and tap Check again.";
+const VIDEO_NOT_VISIBLE_MSG = "Video Studio's model isn't visible to the engine. Check the Video panel — the model may still be downloading, or the merged model file may be missing.";
 
 /** WO-43: PNG magic bytes (89 50 4E 47 0D 0A 1A 0A) — a /view reply that is
  *  not a PNG (an error page, a redirect target) must never be saved as one. */
@@ -72,6 +73,12 @@ function mapComfyError(status, body) {
         const text = String(((er && er.message) || '') + ' ' + ((er && er.details) || ''));
         if (/ckpt_name/i.test(text)) {
           return { plain: MODEL_NOT_VISIBLE_MSG, modelNotVisible: true };
+        }
+        // M2: a video loader naming a file ComfyUI cannot see (merged
+        // diffusion file, VAE, or text encoder) is the video equivalent
+        // of the WO-41 checkpoint bug — plain words, never raw JSON.
+        if (/unet_name|clip_name|vae_name/i.test(text)) {
+          return { plain: VIDEO_NOT_VISIBLE_MSG, modelNotVisible: true };
         }
       }
     }
@@ -380,6 +387,106 @@ class ComfyManager {
     }
   }
 
+  /** M2: full /object_info node map (node names + input schemas). */
+  async getObjectInfo() {
+    if (!this.ready) return { ok: false, error: 'ComfyUI is not running.' };
+    try {
+      const info = await this._get('/object_info');
+      return { ok: true, info: info || {} };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  /**
+   * M2: fetch a finished VIDEO generation and save it to a Library
+   * project (videos/ + sidecar in videos/.sidecars/), mirroring
+   * fetchAndSaveOutput for images. SaveVideo writes the mp4 to
+   * ComfyUI/output/video/ (prefix video/TakeOne), so main picks the
+   * newest mp4 written after queue time — it never guesses from
+   * history's output shape, which differs per node version. The mp4
+   * bytes come back as a dataUrl for the renderer's <video> preview
+   * (same pattern as images; a short clip is a few MB).
+   *
+   * Returns:
+   *   { ok:true, path, fileName, bytes, dataUrl, projectId } on success.
+   *   { ok:false, notFinished:true } while the prompt is still running.
+   *   { ok:false, error } in plain words otherwise. When the video
+   *   EXISTS in history but cannot be found/saved, the error starts
+   *   "The video was made but couldn't be saved." — the generation
+   *   itself is not the failure.
+   */
+  async fetchAndSaveVideoOutput(root, promptId, projectId, meta = {}) {
+    if (!this.ready) return { ok: false, error: 'ComfyUI is not running.' };
+    const h = await this.getHistory(promptId);
+    if (!h.ok) return { ok: false, error: h.error };
+    const hist = h.history;
+    if (!hist) return { ok: false, notFinished: true };
+    const status = hist.status || {};
+    if (!status.completed) return { ok: false, notFinished: true };
+    if (status.status_str === 'error') {
+      const msgs = Array.isArray(status.messages) ? status.messages : [];
+      const execErr = msgs.find((m) => Array.isArray(m) && m[0] === 'execution_error');
+      const detail = execErr && execErr[1] && (execErr[1].message || execErr[1].details)
+        ? String(execErr[1].message || execErr[1].details).replace(/\s+/g, ' ').trim().slice(0, 300)
+        : 'the engine reported an error';
+      logToApp(`Video generation failed: ${detail}`);
+      return { ok: false, error: `The video couldn't be made: ${detail}` };
+    }
+    const outDir = path.join(this.comfyDir, 'output', 'video');
+    let candidates = [];
+    try {
+      const names = fs.readdirSync(outDir).filter((n) => /\.mp4$/i.test(n));
+      for (const n of names) {
+        try {
+          const st = fs.statSync(path.join(outDir, n));
+          candidates.push({ n, mtime: st.mtimeMs, size: st.size });
+        } catch { /* unreadable — skip */ }
+      }
+    } catch (e) {
+      logToApp(`Video output dir unreadable: ${outDir} (${e.message})`);
+      return { ok: false, error: "The video was made but couldn't be saved. TakeOne could not read ComfyUI's output folder." };
+    }
+    const queuedAt = typeof meta.queuedAt === 'number' ? meta.queuedAt : 0;
+    candidates.sort((a, b) => b.mtime - a.mtime);
+    const pick = candidates.find((c) => c.mtime >= queuedAt - 2000);
+    if (!pick) {
+      logToApp(`Video output not found: ${candidates.length} mp4(s) in ${outDir}, none newer than queue time`);
+      return { ok: false, error: "The video was made but couldn't be saved. No new video file appeared in ComfyUI's output folder." };
+    }
+    const srcPath = path.join(outDir, pick.n);
+    const projDir = path.join(root, 'Projects', projectId, 'videos');
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-')
+      + '-' + Math.random().toString(36).slice(2, 6);
+    const fileName = `${stamp}.mp4`;
+    const dstPath = path.join(projDir, fileName);
+    let bytes;
+    try {
+      await fsp.mkdir(projDir, { recursive: true });
+      bytes = await fsp.readFile(srcPath);
+      await fsp.writeFile(dstPath, bytes);
+      const sidecar = {
+        prompt: meta.prompt || '', model: meta.model || '', seed: meta.seed ?? null,
+        width: meta.width || null, height: meta.height || null,
+        resolution: meta.resolution || null, duration: meta.duration ?? null,
+        length: meta.length ?? null, promptId,
+        comfyFile: pick.n, bytes: bytes.length,
+        savedAt: new Date().toISOString(), source: 'video',
+      };
+      const sidecarDir = path.join(projDir, '.sidecars');
+      await fsp.mkdir(sidecarDir, { recursive: true });
+      await fsp.writeFile(path.join(sidecarDir, `${stamp}.json`), JSON.stringify(sidecar, null, 2), 'utf8');
+    } catch (e) {
+      logToApp(`Video save failed: ${e.message}`);
+      return { ok: false, error: "The video was made but couldn't be saved. TakeOne could not write it to the Library." };
+    }
+    logToApp(`Video saved: ${dstPath} (${bytes.length} bytes)`);
+    return {
+      ok: true, path: dstPath, fileName, bytes: bytes.length,
+      projectId, dataUrl: 'data:video/mp4;base64,' + bytes.toString('base64'),
+    };
+  }
+
   /** Binary GET (for /view): returns { status, contentType, buffer }. */
   _getBinary(p) {
     return new Promise((resolve, reject) => {
@@ -499,4 +606,4 @@ class ComfyManager {
   isRunning() { return this.ready && !!this.proc; }
 }
 
-module.exports = { ComfyManager, COMFY_PORT, buildComfyArgs, mapComfyError, createEngineComfy, MODEL_NOT_VISIBLE_MSG };
+module.exports = { ComfyManager, COMFY_PORT, buildComfyArgs, mapComfyError, createEngineComfy, MODEL_NOT_VISIBLE_MSG, VIDEO_NOT_VISIBLE_MSG };
