@@ -142,6 +142,11 @@ async function main() {
   }
   const wanNodes = nodeNames.filter((n) => /wan/i.test(n));
   log('Wan nodes served:', wanNodes.join(', '));
+  // Windows lists loader files with BACKSLASHES
+  // ("video-studio\diffusion_pytorch_model.safetensors") while the
+  // app's loader names use forward slashes — compare normalized, or
+  // every loader check 400s on separator alone (run 6).
+  const norm = (s) => String(s).replace(/\\/g, '/');
   const unetList = (((info.info.UNETLoader || {}).input || {}).required || {}).unet_name;
   const clipList = (((info.info.CLIPLoader || {}).input || {}).required || {}).clip_name;
   const vaeList = (((info.info.VAELoader || {}).input || {}).required || {}).vae_name;
@@ -150,7 +155,7 @@ async function main() {
     ['UNETLoader', unetList, names.unet], ['CLIPLoader', clipList, names.clip],
     ['VAELoader', vaeList, names.vae], ['LoadImage', loadImageList, 'e2e-tiny.png'],
   ]) {
-    if (!Array.isArray(list) || !list[0] || !list[0].includes(want)) {
+    if (!Array.isArray(list) || !list[0] || !(list[0].map(norm).includes(want))) {
       throw new Error(`${label} list does not contain ${want} (got: ${JSON.stringify(list && list[0])})`);
     }
     log(`${label} lists ${want}`);

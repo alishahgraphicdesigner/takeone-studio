@@ -245,6 +245,10 @@ describe('e2e-video driver uses real module exports (M2.5 regression)', () => {
     // stream, never on single chunk "lines".
     assert.ok(src.includes("join('')"), 'driver must reconstitute the log stream from chunks before matching');
     assert.ok(src.includes('streamHas'), 'driver must check extra paths on the joined stream');
+    // Sixth CI failure class: Windows /object_info lists loader files
+    // with backslashes, the app's names use forward slashes — the
+    // driver must compare separator-normalized.
+    assert.ok(src.includes("replace(/\\\\/g, '/')"), 'driver must normalize backslashes before comparing loader lists');
   });
 });
 
