@@ -216,6 +216,10 @@ describe('e2e-video driver uses real module exports (M2.5 regression)', () => {
     // manifest loop must use the real field names.
     assert.ok(src.includes('f.path') && src.includes('f.bytes'), 'driver manifest loop must use path/bytes');
     assert.ok(!src.includes('f.fileName') && !src.includes('f.size'), 'driver must not use fileName/size');
+    // Third CI failure class: vae logs TWO extra-path lines (image/vae +
+    // video), and the driver took the first. It must accept ANY line per
+    // key that points at Models/video.
+    assert.ok(src.includes('lines.find'), 'driver must search all extra-path lines per key, not just the first');
   });
 });
 

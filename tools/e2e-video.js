@@ -106,11 +106,15 @@ async function main() {
   try { comfyLogText = fs.readFileSync(comfyLogFile, 'utf8'); } catch {}
   const allLines = [...comfyLog, ...comfyLogText.split(/\r?\n/)];
   // Extra search paths must reach Models/video for all three Wan keys.
+  // vae is a TWO-dir block (Models/image/vae + Models/video), so ComfyUI
+  // logs two vae lines — the check is "at least one line per key points
+  // at Models/video", not "the first line does".
   for (const key of ['diffusion_models', 'vae', 'text_encoders']) {
-    const line = allLines.find((l) => /Adding extra search path/i.test(l) && l.includes(key));
-    if (!line) throw new Error(`ComfyUI log has no "Adding extra search path ${key}" line`);
-    if (!/Models/.test(line) || !/video/.test(line)) throw new Error(`extra path ${key} does not point at Models/video: ${line}`);
-    log(`extra path ${key}:`, line.trim());
+    const lines = allLines.filter((l) => /Adding extra search path/i.test(l) && l.includes(key));
+    if (lines.length === 0) throw new Error(`ComfyUI log has no "Adding extra search path ${key}" line`);
+    const hit = lines.find((l) => /Models/.test(l) && /video/.test(l));
+    if (!hit) throw new Error(`no extra path ${key} line points at Models/video: ${lines.map((l) => l.trim()).join(' | ')}`);
+    log(`extra path ${key}:`, hit.trim());
   }
   // Tiny PNG into ComfyUI/input BEFORE /object_info, so LoadImage's
   // combo list contains it at queue time (same membership rule).
