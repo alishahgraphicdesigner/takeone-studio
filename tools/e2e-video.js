@@ -53,8 +53,8 @@ async function main() {
   if (!inst.ok) throw new Error(`engine install failed: ${inst.why} — ${inst.whatNext}`);
 
   // 2. Manifest check — the catalog entry itself, no download.
-  const catalog = require('../main/catalog.js');
-  const entry = catalog.TOOLS.find((t) => t.id === 'video-studio');
+  const { CATALOG } = require('../main/catalog.js');
+  const entry = CATALOG.find((t) => t.id === 'video-studio');
   if (!entry) throw new Error('video-studio missing from catalog');
   if (entry.repo !== 'Wan-AI/Wan2.2-TI2V-5B') throw new Error(`wrong repo: ${entry.repo}`);
   if (!/^[0-9a-f]{40}$/.test(entry.commit || '')) throw new Error(`commit not pinned: ${entry.commit}`);

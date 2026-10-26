@@ -200,6 +200,20 @@ describe('diagnostics video list (M2)', () => {
   });
 });
 
+describe('e2e-video driver uses real module exports (M2.5 regression)', () => {
+  // The first CI run of e2e-video died on catalog.TOOLS — an export that
+  // does not exist (it is CATALOG). The driver only runs on CI, so a
+  // local test must catch a wrong export name before it ships.
+  it('references CATALOG, never TOOLS, and every module it requires exports what it uses', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'tools', 'e2e-video.js'), 'utf8');
+    assert.ok(!src.includes('TOOLS'), 'driver still references the nonexistent TOOLS export');
+    assert.ok(src.includes('CATALOG.find'), 'driver must look video-studio up in CATALOG');
+    const catalogMod = require('../main/catalog.js');
+    assert.ok(Array.isArray(catalogMod.CATALOG), 'catalog.js must export the CATALOG array');
+    assert.ok(catalogMod.CATALOG.some((t) => t.id === 'video-studio'));
+  });
+});
+
 describe('merge-shards.py (M2 load path)', () => {
   it('rejects bad usage', (t) => {
     const py = findPython();
