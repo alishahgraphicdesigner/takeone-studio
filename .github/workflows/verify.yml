@@ -37,7 +37,9 @@ jobs:
         with:
           name: ui-audit-${{ github.run_number }}
           path: ui-audit-out
-          if-no-files-found: error
+          # warn, not error: a crashed audit must still fail via its own
+          # exit code, and the log (with the page list) is the evidence.
+          if-no-files-found: warn
 
   logic-and-real-aria2-linux:
     runs-on: ubuntu-latest

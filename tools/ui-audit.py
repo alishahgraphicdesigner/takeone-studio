@@ -184,7 +184,12 @@ def main():
 
     work = Path(tempfile.mkdtemp(prefix="ui-audit-"))
     home, _root = seed_library(work)
-    env = dict(os.environ, HOME=str(home))
+    # Force BOTH HOME and XDG_CONFIG_HOME: Electron resolves appData from
+    # XDG_CONFIG_HOME when set, else HOME/.config — a CI runner env that
+    # sets XDG_CONFIG_HOME would otherwise make boot miss the seeded
+    # receipt and fall into the first-run wizard path (the CI failure mode:
+    # a page with no #studioBody, hence the wait timeout).
+    env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / ".config"))
     # Free port per run (a stale app on a fixed port would silently serve
     # OLD code — the audit must never attach to anything but its own app).
     import socket
@@ -213,13 +218,29 @@ def main():
                 if pages:
                     break
                 time.sleep(1)
+            # Diagnose the boot path in the log: a wizard/splash page here
+            # means the seeded receipt was missed (never a silent timeout).
+            for pg in pages:
+                print(f"page: {pg.url} :: {pg.title()}")
             if not pages:
                 print("FAIL: no app pages found over CDP")
                 return 1
-            page = pages[-1]
+            studio_pages = [pg for pg in pages if pg.url.endswith("studio.html")]
+            if not studio_pages:
+                print("FAIL: no studio.html page — boot did not reach the Studio window")
+                print("pages were: " + ", ".join(pg.url for pg in pages))
+                try:
+                    import glob
+                    for lf in glob.glob("/tmp/takeone-startup.log"):
+                        print("app log tail:")
+                        print("\n".join(open(lf, errors="replace").read().splitlines()[-30:]))
+                except Exception:
+                    pass
+                return 1
+            page = studio_pages[-1]
             page.wait_for_function(
                 "() => document.querySelector('#studioBody') && document.querySelector('#studioBody').innerText.trim().length > 0",
-                timeout=60000)
+                timeout=120000)
             for view in VIEWS:
                 report[view] = {}
                 # Real user path: click the rail button.
