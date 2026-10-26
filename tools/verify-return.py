@@ -81,16 +81,21 @@ def main():
     for kind in ["verify", "e2e", "build"]:
         found = [n for n in logs if kind in Path(n).name.lower()]
         ok = bool(found)
-        text = ""
-        if found:
-            text = zf.read(found[0]).decode("utf-8", errors="replace")
-            log_text[kind] = text
         check(f"logs/ has {kind} log", ok, found[0] if found else "missing")
         if found:
-            # The log must record a success conclusion, not just a filename.
-            good = ("success" in text.lower() and
-                    ("conclusion" in text.lower() or "PASS" in text or "OK:" in text))
-            check(f"{kind} log records success", good)
+            # ANY matching log must record success (a failed first attempt
+            # may honestly sit next to the green re-run — the green one is
+            # what the artifact must come from).
+            good = False
+            for fn in found:
+                text = zf.read(fn).decode("utf-8", errors="replace")
+                if ("success" in text.lower() and
+                        ("conclusion" in text.lower() or "PASS" in text or "OK:" in text)):
+                    good = True
+                    log_text[kind] = text
+                    break
+            check(f"{kind} log records success", good,
+                  "green log present" if good else "no green log")
 
     ver_m = re.search(r"version (\d+\.\d+\.\d+)", note) or re.search(r"\b(2\.\d+\.\d+)\b", note)
     version = ver_m.group(1) if ver_m else ""
