@@ -136,10 +136,15 @@ describe('catalog video-studio (M2.1)', () => {
 describe('video loader names + VRAM check (M2.4)', () => {
   it('loads the MERGED file, never a shard', () => {
     const n = videoLoaderNames();
-    assert.equal(n.unet, 'video-studio/diffusion_pytorch_model.safetensors');
+    // OS-native separators (path.join): forward slashes on Linux/macOS,
+    // backslashes on Windows — ComfyUI's combo equality is strict, so
+    // the value must match the server's own listing form (e2e-video
+    // run 8 proved forward slashes 400 on Windows).
+    const sep = path.sep;
+    assert.equal(n.unet, ['video-studio', 'diffusion_pytorch_model.safetensors'].join(sep));
     assert.ok(!/0000\d-of-00003/.test(n.unet));
-    assert.equal(n.clip, 'video-studio/models_t5_umt5-xxl-enc-bf16.pth');
-    assert.equal(n.vae, 'video-studio/Wan2.2_VAE.pth');
+    assert.equal(n.clip, ['video-studio', 'models_t5_umt5-xxl-enc-bf16.pth'].join(sep));
+    assert.equal(n.vae, ['video-studio', 'Wan2.2_VAE.pth'].join(sep));
   });
   it('VRAM check reports in plain words, never blocks', () => {
     assert.equal(videoVramCheck(null).level, 'unknown');

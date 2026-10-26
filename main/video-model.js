@@ -25,11 +25,20 @@ function videoToolDir(root) {
  * Windows). The diffusion entry is the MERGED file, not a shard:
  * UNETLoader cannot load sharded weights (see merge-shards.py).
  */
+/**
+ * Loader combo values for UNETLoader / CLIPLoader / VAELoader.
+ * MUST use the OS separator (path.join): ComfyUI's combo lists are
+ * built with os.path.join, so on Windows they carry backslashes and
+ * queue validation is strict string equality — forward slashes 400
+ * with "value_not_in_list" (proven by e2e-video run 8, ComfyUI's own
+ * 400 body). On Linux/macOS path.join gives forward slashes, which is
+ * what those servers list. Never hard-code '/' here.
+ */
 function videoLoaderNames() {
   return {
-    unet: `${VIDEO_TOOL_ID}/${MERGED_FILE}`,
-    clip: `${VIDEO_TOOL_ID}/models_t5_umt5-xxl-enc-bf16.pth`,
-    vae: `${VIDEO_TOOL_ID}/Wan2.2_VAE.pth`,
+    unet: path.join(VIDEO_TOOL_ID, MERGED_FILE),
+    clip: path.join(VIDEO_TOOL_ID, 'models_t5_umt5-xxl-enc-bf16.pth'),
+    vae: path.join(VIDEO_TOOL_ID, 'Wan2.2_VAE.pth'),
   };
 }
 

@@ -1386,9 +1386,14 @@ function wireIPC() {
       const unets = listOf('UNETLoader', 'unet_name');
       const clips = listOf('CLIPLoader', 'clip_name');
       const vaes = listOf('VAELoader', 'vae_name');
-      if ((unets.length && !unets.includes(names.unet))
-        || (clips.length && !clips.includes(names.clip))
-        || (vaes.length && !vaes.includes(names.vae))) {
+      // Compare separator-normalized: the server lists OS-native paths
+      // (backslashes on Windows); names.unet etc. are OS-native too,
+      // but a future ComfyUI listing form must not false-negative here.
+      const norm = (s) => String(s).replace(/\\/g, '/');
+      const has = (list, want) => list.map(norm).includes(norm(want));
+      if ((unets.length && !has(unets, names.unet))
+        || (clips.length && !has(clips, names.clip))
+        || (vaes.length && !has(vaes, names.vae))) {
         return { ok: false, modelNotVisible: true, error: VIDEO_NOT_VISIBLE_MSG, action: 'video' };
       }
     }
