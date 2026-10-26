@@ -62,10 +62,10 @@ async function main() {
   if (!Array.isArray(entry.files) || entry.files.length === 0) throw new Error('files[] manifest empty');
   let total = 0;
   for (const f of entry.files) {
-    if (!f.fileName || !/^[0-9a-f]{64}$/.test(f.sha256 || '') || !(f.size > 0)) {
+    if (!f.path || !/^[0-9a-f]{64}$/.test(f.sha256 || '') || !(f.bytes > 0)) {
       throw new Error(`bad manifest entry: ${JSON.stringify(f)}`);
     }
-    total += f.size;
+    total += f.bytes;
   }
   log(`manifest OK: ${entry.files.length} files, ${total} bytes, commit ${entry.commit}`);
   if (entry.sizeBytes && entry.sizeBytes !== total) {

@@ -211,6 +211,11 @@ describe('e2e-video driver uses real module exports (M2.5 regression)', () => {
     const catalogMod = require('../main/catalog.js');
     assert.ok(Array.isArray(catalogMod.CATALOG), 'catalog.js must export the CATALOG array');
     assert.ok(catalogMod.CATALOG.some((t) => t.id === 'video-studio'));
+    // Second CI failure class: the driver validated manifest entries with
+    // fileName/size, but the catalog shape is path/bytes. The driver's
+    // manifest loop must use the real field names.
+    assert.ok(src.includes('f.path') && src.includes('f.bytes'), 'driver manifest loop must use path/bytes');
+    assert.ok(!src.includes('f.fileName') && !src.includes('f.size'), 'driver must not use fileName/size');
   });
 });
 
