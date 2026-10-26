@@ -170,7 +170,12 @@ async function main() {
     length: videoFrames(2), seed: 42,
   });
   const q1 = await mgr.queuePrompt(t2v);
-  if (!q1.ok) throw new Error('T2V queue VALIDATION failed (this is the WO-41 class): ' + (q1.error || JSON.stringify(q1)));
+  if (!q1.ok) {
+    // The plain message hides the diagnosis: print the RAW 400 body so
+    // the next fix targets the real validation error, not a guess.
+    log('T2V queue raw error:', q1.rawError || '(no raw body)');
+    throw new Error('T2V queue VALIDATION failed (this is the WO-41 class): ' + (q1.error || JSON.stringify(q1)));
+  }
   log('T2V queued, prompt_id:', q1.promptId || q1.id);
   await mgr.interrupt();
   log('T2V interrupted');
@@ -183,7 +188,10 @@ async function main() {
     length: videoFrames(2), seed: 42, startImage: 'e2e-tiny.png',
   });
   const q2 = await mgr.queuePrompt(i2v);
-  if (!q2.ok) throw new Error('I2V queue VALIDATION failed (this is the WO-41 class): ' + (q2.error || JSON.stringify(q2)));
+  if (!q2.ok) {
+    log('I2V queue raw error:', q2.rawError || '(no raw body)');
+    throw new Error('I2V queue VALIDATION failed (this is the WO-41 class): ' + (q2.error || JSON.stringify(q2)));
+  }
   log('I2V queued, prompt_id:', q2.promptId || q2.id);
   await mgr.interrupt();
   log('I2V interrupted');
