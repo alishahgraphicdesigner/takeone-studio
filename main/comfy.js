@@ -118,6 +118,25 @@ function createEngineComfy({ root, cpu, onEvent }) {
   return new ComfyManager({ root, pythonExe, comfyDir, cpu: !!cpu, modelPaths: true, onEvent });
 }
 
+/**
+ * M2.5: split a byte stream into COMPLETE log lines. ComfyUI's stderr
+ * arrives as arbitrary data chunks (block-buffered when piped — a chunk
+ * can hold many lines or half of one), and the old handler forwarded
+ * each chunk trimmed + sliced to 200 chars as if it were a line: any
+ * log line past char 200 of its chunk was silently LOST from both the
+ * event stream and the diagnostics file (this is what ate the
+ * text_encoders extra-path line on CI, twice). Buffering restores whole
+ * lines; the caller keeps the trailing partial for the next chunk.
+ * Pure — unit-tested in test/m2.test.js.
+ */
+function splitLogLines(buffer, chunk) {
+  const text = buffer + String(chunk);
+  const parts = text.split('\n');
+  const rest = parts.pop();
+  const lines = parts.map((l) => (l.endsWith('\r') ? l.slice(0, -1) : l));
+  return { lines, rest };
+}
+
 class ComfyManager {
   constructor({ root, pythonExe, comfyDir, onEvent, cpu, modelPaths }) {
     this.root = root;
@@ -252,11 +271,18 @@ class ComfyManager {
         // Log but don't fail — ComfyUI is noisy on stderr.
         // NOTE: ComfyUI prints its startup banner ("To see the GUI…") on STDERR,
         // not stdout — so the ready signal is checked here too.
-        const s = String(d).trim();
-        // WO-32: persist child output for the diagnostics report.
-        try { if (s) require('./diagnostics.js').appendComfyLog(this.root, '[err] ' + s.slice(0, 500)); } catch {}
-        if (s) this.onEvent('log', { line: s.slice(0, 200) });
-        if (s.includes('To see the GUI') || s.includes('Starting server')) this._onReadySignal(done);
+        // M2.5: buffer into COMPLETE lines first (see splitLogLines) —
+        // forwarding raw chunks sliced to 200 chars silently dropped
+        // every log line past char 200 of its chunk.
+        const { lines, rest } = splitLogLines(this._errBuf || '', d);
+        this._errBuf = rest;
+        for (const line of lines) {
+          if (!line) continue;
+          // WO-32: persist child output for the diagnostics report.
+          try { require('./diagnostics.js').appendComfyLog(this.root, '[err] ' + line.slice(0, 2000)); } catch {}
+          this.onEvent('log', { line: line.slice(0, 2000) });
+          if (line.includes('To see the GUI') || line.includes('Starting server')) this._onReadySignal(done);
+        }
       });
 
       this.proc.on('error', (e) => {
@@ -266,6 +292,12 @@ class ComfyManager {
       this.proc.on('close', (code) => {
         this.ready = false;
         this.proc = null;
+        // M2.5: flush a trailing partial stderr line (no trailing \n).
+        if (this._errBuf) {
+          try { require('./diagnostics.js').appendComfyLog(this.root, '[err] ' + this._errBuf.slice(0, 2000)); } catch {}
+          this.onEvent('log', { line: this._errBuf.slice(0, 2000) });
+          this._errBuf = '';
+        }
         if (!settled) done({ ok: false, error: `ComfyUI exited (code ${code}).` });
         else this.onEvent('stopped', { code });
       });
@@ -606,4 +638,4 @@ class ComfyManager {
   isRunning() { return this.ready && !!this.proc; }
 }
 
-module.exports = { ComfyManager, COMFY_PORT, buildComfyArgs, mapComfyError, createEngineComfy, MODEL_NOT_VISIBLE_MSG, VIDEO_NOT_VISIBLE_MSG };
+module.exports = { ComfyManager, COMFY_PORT, buildComfyArgs, mapComfyError, createEngineComfy, MODEL_NOT_VISIBLE_MSG, VIDEO_NOT_VISIBLE_MSG, splitLogLines };

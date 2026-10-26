@@ -200,6 +200,26 @@ describe('diagnostics video list (M2)', () => {
   });
 });
 
+describe('comfy stderr line buffering (M2.5 root fix)', () => {
+  const { splitLogLines } = require('../main/comfy.js');
+  it('reassembles a line split across chunks, keeps multi-line chunks whole', () => {
+    let r = splitLogLines('', '[INFO] Adding extra search path text_encoders D:\\a');
+    assert.deepEqual(r.lines, []);
+    assert.equal(r.rest, '[INFO] Adding extra search path text_encoders D:\\a');
+    r = splitLogLines(r.rest, '\\takeone-studio\\Models\\video\n[INFO] next line\npartial');
+    assert.deepEqual(r.lines, [
+      '[INFO] Adding extra search path text_encoders D:\\a\\takeone-studio\\Models\\video',
+      '[INFO] next line',
+    ]);
+    assert.equal(r.rest, 'partial');
+  });
+  it('strips \\r from CRLF lines', () => {
+    const r = splitLogLines('', 'line one\r\nline two\r\n');
+    assert.deepEqual(r.lines, ['line one', 'line two']);
+    assert.equal(r.rest, '');
+  });
+});
+
 describe('e2e-video driver uses real module exports (M2.5 regression)', () => {
   // The first CI run of e2e-video died on catalog.TOOLS — an export that
   // does not exist (it is CATALOG). The driver only runs on CI, so a
