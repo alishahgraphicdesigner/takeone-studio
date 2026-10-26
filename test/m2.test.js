@@ -254,6 +254,10 @@ describe('e2e-video driver uses real module exports (M2.5 regression)', () => {
     // with backslashes, the app's names use forward slashes — the
     // driver must compare separator-normalized.
     assert.ok(src.includes("replace(/\\\\/g, '/')"), 'driver must normalize backslashes before comparing loader lists');
+    // Ninth CI failure class: fix 5 normalized only the LIST side, not
+    // the wanted value — normalize both sides or the check fails in
+    // exactly one direction.
+    assert.ok(src.includes('map(norm).includes(norm(want))'), 'driver must normalize both sides of the loader-list comparison');
   });
 });
 

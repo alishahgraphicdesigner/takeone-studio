@@ -155,7 +155,10 @@ async function main() {
     ['UNETLoader', unetList, names.unet], ['CLIPLoader', clipList, names.clip],
     ['VAELoader', vaeList, names.vae], ['LoadImage', loadImageList, 'e2e-tiny.png'],
   ]) {
-    if (!Array.isArray(list) || !list[0] || !(list[0].map(norm).includes(want))) {
+    // Normalize BOTH sides: the server lists backslashes on Windows,
+    // the app names are OS-native — comparing one normalized side
+    // against a raw other side fails in exactly one direction (run 9).
+    if (!Array.isArray(list) || !list[0] || !(list[0].map(norm).includes(norm(want)))) {
       throw new Error(`${label} list does not contain ${want} (got: ${JSON.stringify(list && list[0])})`);
     }
     log(`${label} lists ${want}`);
