@@ -82,13 +82,17 @@
     const pc = cfg.pcCheck || {};
     const shownRoot = await window.takeone.displayPath(root);
     $('#settingsCards').innerHTML =
-      // M1.g: the data folder, shown read-only (plain text, never an
-      // editable field) + the diagnostics button alongside it.
-      card('Data folder', shownRoot, '<span class="muted small">Read-only — this is where TakeOne keeps everything (projects, models, Library).</span>') +
       card('Language', 'English') +
       card('PC check', pc.measuredAt ? 'Completed ' + new Date(pc.measuredAt).toLocaleString() : 'Not run',
         pc.speedMbps !== null && pc.speedMbps !== undefined ? `Download speed: ${pc.speedMbps} Mbps (measured)` : 'Download speed: not measured') +
       card('TakeOne folder', shownRoot, `<button class="link" id="showFolder2">Show in folder</button> <button class="link" id="changeFolder2">Change...</button>`) +
+      // M2.6-ENABLE: the experimental video switch (default OFF). Plain
+      // words + warning; toggling saves and restarts so the Models page
+      // and Video panel re-read it on boot.
+      card('Experimental: early video', (cfg.settings && cfg.settings.experimentalVideo) ? 'On' : 'Off',
+        `<label><input type="checkbox" id="expVideoSwitch" ${(cfg.settings && cfg.settings.experimentalVideo) ? 'checked' : ''}> Try video before it is proven</label>` +
+        `<p class="muted small">Warning: video is early and unproven — clips may fail, take a long time, or use a lot of disk (the model alone is about 34 GB). Only switch this on if you want to test video early. When off, video shows “Coming soon”.</p>` +
+        `<span class="muted small" id="expVideoNote"></span>`) +
       // WO-32: one-click diagnostics — plain-text report on the clipboard (user names masked, no secrets).
       card('Diagnostics', 'App version, Windows, GPU, engine status and recent logs as plain text.',
         `<button class="link" id="copyDiagnostics">Copy diagnostics</button> <span class="muted small" id="diagNote"></span>`);
@@ -103,6 +107,16 @@
       setTimeout(() => { note.textContent = ''; }, 5000);
     });
     $('#showFolder2').addEventListener('click', () => window.takeone.showInFolder(root));
+    const evSwitch = $('#expVideoSwitch');
+    if (evSwitch) evSwitch.addEventListener('change', async () => {
+      const note = $('#expVideoNote');
+      try {
+        const r = await window.takeone.setExperimentalVideo(root, evSwitch.checked);
+        if (!r || !r.ok) { note.textContent = 'Could not save — try again.'; evSwitch.checked = !evSwitch.checked; return; }
+        note.textContent = 'Saved — restarting so the change takes effect…';
+        setTimeout(() => window.takeone.relaunch(), 600);
+      } catch { note.textContent = 'Could not save — try again.'; evSwitch.checked = !evSwitch.checked; }
+    });
     $('#changeFolder2').addEventListener('click', async () => {
       const p = await window.takeone.pickFolder();
       if (!p) return;
@@ -181,6 +195,10 @@
       b.classList.add('active');
       document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
       $('#view-' + b.dataset.view).classList.add('on');
+      // FIX-4: the Library re-reads from disk every time it opens (see
+      // pipeline.switchView for the programmatic path). Without this, a
+      // project created after page load never appeared on this tab.
+      if (b.dataset.view === 'library' && window.takeoneLibraryRefresh) window.takeoneLibraryRefresh();
     }));
     $('#removeBtn').addEventListener('click', openRemove);
     $('#removeCancel').addEventListener('click', () => { $('#removeModal').hidden = true; });

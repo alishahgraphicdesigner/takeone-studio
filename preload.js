@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld('takeone', {
   openExternal: (url) => ipcRenderer.invoke('takeone:openExternal', url),
   adoptPick: (toolId, root) => ipcRenderer.invoke('takeone:adoptPick', toolId, root),
   onDlEvent: (cb) => ipcRenderer.on('dl-event', (_e, v) => cb(v)),
+  onLibraryChanged: (cb) => ipcRenderer.on('takeone:library-changed', () => cb()),
   onDepEvent: (cb) => ipcRenderer.on('dep-event', (_e, v) => cb(v)),
   // WO-23/26: AI engine install (one-click engine + model chain)
   engineInstall: (root) => ipcRenderer.invoke('takeone:engineInstall', root),
@@ -102,6 +103,7 @@ contextBridge.exposeInMainWorld('takeone', {
   getTaste: (root) => ipcRenderer.invoke('takeone:getTaste', root),
   addTaste: (root, type, text) => ipcRenderer.invoke('takeone:addTaste', root, type, text),
   setNiche: (root, niche) => ipcRenderer.invoke('takeone:setNiche', root, niche),
+  setExperimentalVideo: (root, on) => ipcRenderer.invoke('takeone:setExperimentalVideo', root, on),
   removeTaste: (root, id) => ipcRenderer.invoke('takeone:removeTaste', root, id),
   updateTaste: (root, id, text) => ipcRenderer.invoke('takeone:updateTaste', root, id, text),
 });

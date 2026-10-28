@@ -10,6 +10,7 @@
   let root = null;
   let openId = null;
 
+
   function gb(b) { return (b / 2 ** 30).toFixed(2) + ' GB'; }
   function mb(b) { return b > 2 ** 30 ? gb(b) : (b / 2 ** 20).toFixed(1) + ' MB'; }
   function fmtDate(iso) {
@@ -25,6 +26,11 @@
     const cfg = await window.takeone.getConfig();
     if (!cfg) return;
     root = cfg.storageRoot;
+    // FIX-4 (FINAL item 2): the main process announces every project/asset
+    // change. Re-read on the event, even while this tab is open — a
+    // Quick Generate / Ali pack save appears at once, no restart, no
+    // tab switch needed. (Tab switches re-read too; both paths exist.)
+    if (window.takeone.onLibraryChanged) window.takeone.onLibraryChanged(() => { render().catch((e) => console.error(e)); });
     render();
   }
 
@@ -186,6 +192,11 @@
       }
     }));
   }
+
+  // FIX-4: re-read from disk every time the Library tab opens (see
+  // pipeline.switchView / studio rail wiring). Called on tab switches;
+  // harmless if the page is still loading (init renders anyway).
+  window.takeoneLibraryRefresh = () => { render().catch((e) => console.error(e)); };
 
   document.addEventListener('DOMContentLoaded', () => { init().catch((e) => console.error(e)); });
 })();

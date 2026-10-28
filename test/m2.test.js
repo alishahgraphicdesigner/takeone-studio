@@ -119,12 +119,13 @@ describe('catalog video-studio (M2.1)', () => {
     assert.ok(paths.includes('diffusion_pytorch_model.safetensors.index.json'));
     assert.equal(paths.filter((p) => /^diffusion_pytorch_model-0000\d-of-00003\.safetensors$/.test(p)).length, 3);
   });
-  it('license note is plain words; unavailable STAYS until M2.5+M2.6 green', () => {
+  it('license note is plain words; experimental flag replaces unavailable (M2.6-ENABLE)', () => {
     assert.equal(vs.license, 'Apache-2.0');
     assert.match(vs.licenseNote, /Free for commercial use/);
     assert.match(vs.licenseNote, /no payment/);
-    assert.ok(typeof vs.unavailable === 'string' && vs.unavailable.length > 0);
-    assert.match(vs.unavailable, /M2\.6/);
+    assert.ok(typeof vs.experimental === 'string' && vs.experimental.length > 0);
+    assert.match(vs.experimental, /M2\.6/);
+    assert.equal(vs.unavailable, undefined, 'unavailable was replaced by the experimental flag');
   });
   it('is a 16 GB target, NOT the 24 GB tier (video-pro keeps tier24 alone)', () => {
     assert.equal(vs.vramMB, 16384);

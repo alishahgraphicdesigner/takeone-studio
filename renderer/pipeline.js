@@ -264,6 +264,8 @@
         } finally {
           qgBtn.disabled = false;
           qgBusy = false;
+          const bs = document.getElementById('qgStatusBtn');
+          if (bs) bs.innerHTML = ''; // FIX-6: no dead Cancel after the run ends
         }
       });
       // M1: the Ali pack — 3 prompts × 3 settings, one seed. After all 9,
@@ -301,31 +303,12 @@
             results.push(f ? { ...job, dataUrl: f.dataUrl, path: f.path } : { ...job, dataUrl: null });
             statusEl.textContent = `Ali pack: ${ji + 1}/9 done.`;
           }
-          // Draw the 3×3 sheet (3 prompts as rows, 3 settings as columns).
-          const CELL = 448;
+          // FIX-5: the shared drawer — equal cells, contain-fit (no
+          // square crop), clean label strips (3 prompts as rows, 3
+          // settings as columns).
           const canvas = document.createElement('canvas');
-          canvas.width = CELL * 3; canvas.height = CELL * 3;
-          const ctx = canvas.getContext('2d');
-          ctx.fillStyle = '#111'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-          for (let i = 0; i < 9; i++) {
-            const res = results[i];
-            const cx = (i % 3) * CELL, cy = Math.floor(i / 3) * CELL;
-            if (res.dataUrl) {
-              const img = new Image();
-              img.src = res.dataUrl;
-              try { await img.decode(); } catch { /* draw anyway */ }
-              const scale = Math.max(CELL / img.naturalWidth, CELL / img.naturalHeight);
-              const dw = img.naturalWidth * scale, dh = img.naturalHeight * scale;
-              ctx.drawImage(img, cx + (CELL - dw) / 2, cy + (CELL - dh) / 2, dw, dh);
-            } else {
-              ctx.fillStyle = '#333'; ctx.fillRect(cx, cy, CELL, CELL);
-              ctx.fillStyle = '#999'; ctx.font = '24px sans-serif';
-              ctx.fillText('failed', cx + 20, cy + 40);
-            }
-            ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(cx, cy + CELL - 28, CELL, 28);
-            ctx.fillStyle = '#fff'; ctx.font = '16px sans-serif';
-            ctx.fillText(`${res.preset} ${res.aspect}`, cx + 8, cy + CELL - 8);
-          }
+          await window.TakeOneContactSheet.drawSheet(canvas,
+            results.map((res) => ({ image: res.dataUrl || null, label: `${res.preset} ${res.aspect}` })), 3);
           const sheetUrl = canvas.toDataURL('image/png');
           const sr = await window.takeone.saveContactSheet(root, sheetUrl);
           const cards = document.getElementById('qgCards');
@@ -348,6 +331,8 @@
         } finally {
           qgPackBtn.disabled = false;
           qgBusy = false;
+          const bs = document.getElementById('qgStatusBtn');
+          if (bs) bs.innerHTML = ''; // FIX-6: no dead Cancel after the pack ends
         }
       });
   }
@@ -398,6 +383,13 @@
     let vBusy = false;
     let vInstalled = false;
     let vDlPoll = null;
+    let expVideo = false; // M2.6-ENABLE: default OFF until the setting loads
+    // The switch lives in Settings; toggling relaunches the app, so one
+    // load here is enough (no live re-read needed).
+    window.takeone.getConfig().then((c) => {
+      expVideo = !!(c && c.settings && c.settings.experimentalVideo);
+      refreshVideoState();
+    }).catch(() => {});
     async function refreshVideoState() {
       try {
         const vc = await window.takeone.videoVramCheck(root);
@@ -407,6 +399,16 @@
       try {
         const st = await window.takeone.toolStates(root);
         const vs = st && st['video-studio'];
+        if (!expVideo) {
+          // M2.6-ENABLE OFF: video stays "Coming soon" — no download
+          // offer, no generate, no pack. The old trial path now lives
+          // behind the switch.
+          vInstalled = false;
+          if (vGenBtn) vGenBtn.disabled = true;
+          if (vPackBtn) vPackBtn.disabled = true;
+          if (vDl) vDl.innerHTML = '<span>Coming soon. Video is experimental and switched off — turn on “Experimental: early video” in Settings to try it before its first real clip is proven.</span>';
+          return;
+        }
         if (vs && vs.state === 'installed') {
           vInstalled = true;
           if (vGenBtn) vGenBtn.disabled = false;
@@ -531,8 +533,9 @@
         let imageRel = null, imageProjectId = null;
         if (mode === 'i2v') {
           const sel = ((vImgSel || {}).value || '');
-          if (!sel || !sel.includes('|')) { statusEl.textContent = 'Image → Video needs a Library image — pick one above.'; return; }
-          [imageProjectId, imageRel] = sel.split('|');
+          const parts = sel.split('|');
+          if (parts.length === 2) [imageProjectId, imageRel] = parts;
+          if (!imageRel || !imageProjectId) { statusEl.textContent = 'Image → Video needs a Library image — pick one above.'; return; }
         }
         const dur = parseInt(((($('#videoDur') || {}).value || '2')), 10) || 2;
         const res = ((($('#videoRes') || {}).value || '480p'));
@@ -559,6 +562,8 @@
       } finally {
         vGenBtn.disabled = false;
         vBusy = false;
+        const bs = document.getElementById('videoStatusBtn');
+        if (bs) bs.innerHTML = ''; // FIX-6: no dead Cancel after the run ends
       }
     });
     // M2.6: the video Ali pack — 2 prompts x 2 settings, one seed. After
@@ -614,28 +619,16 @@
             vid.addEventListener('error', () => { clearTimeout(timer); done(false); }, { once: true });
           } catch { resolve(null); }
         });
-        const CELL = 448;
-        const canvas = document.createElement('canvas');
-        canvas.width = CELL * 2; canvas.height = CELL * 2;
-        const ctx = canvas.getContext('2d');
-        ctx.fillStyle = '#111'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+        // FIX-5: the shared drawer — equal cells, contain-fit (no
+        // square crop), clean label strips.
+        const frames = [];
         for (let i = 0; i < 4; i++) {
           const res = results[i] || {};
-          const cx = (i % 2) * CELL, cy = Math.floor(i / 2) * CELL;
-          const frame = res.dataUrl ? await firstFrame(res.dataUrl) : null;
-          if (frame) {
-            const scale = Math.max(CELL / frame.width, CELL / frame.height);
-            const dw = frame.width * scale, dh = frame.height * scale;
-            ctx.drawImage(frame, cx + (CELL - dw) / 2, cy + (CELL - dh) / 2, dw, dh);
-          } else {
-            ctx.fillStyle = '#333'; ctx.fillRect(cx, cy, CELL, CELL);
-            ctx.fillStyle = '#999'; ctx.font = '24px sans-serif';
-            ctx.fillText('failed', cx + 20, cy + 40);
-          }
-          ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(cx, cy + CELL - 28, CELL, 28);
-          ctx.fillStyle = '#fff'; ctx.font = '16px sans-serif';
-          ctx.fillText(`${res.resolution || ''} ${res.duration || ''}s`, cx + 8, cy + CELL - 8);
+          frames.push(res.dataUrl ? await firstFrame(res.dataUrl) : null);
         }
+        const canvas = document.createElement('canvas');
+        await window.TakeOneContactSheet.drawSheet(canvas,
+          results.map((res, i) => ({ image: frames[i], label: `${(res || {}).resolution || ''} ${(res || {}).duration || ''}s` })), 2);
         const sheetUrl = canvas.toDataURL('image/png');
         const sr = await window.takeone.saveVideoContactSheet(root, r.projectId, sheetUrl);
         const cards = document.getElementById('videoCards');
@@ -658,6 +651,8 @@
       } finally {
         vPackBtn.disabled = false;
         vBusy = false;
+        const bs = document.getElementById('videoStatusBtn');
+        if (bs) bs.innerHTML = ''; // FIX-6: no dead Cancel after the pack ends
       }
     });
   }
@@ -846,6 +841,11 @@
   function switchView(name) {
     $$('.railbtn').forEach((x) => x.classList.toggle('active', x.dataset.view === name));
     $$('.view').forEach((v) => v.classList.toggle('on', v.id === 'view-' + name));
+    // FIX-4: the Library re-reads from disk every time it opens. The old
+    // code rendered it once at page load, so a project created afterwards
+    // (e.g. by Quick Generate) never appeared until relaunch — the exact
+    // "Library empty jabke project maujood" report.
+    if (name === 'library' && window.takeoneLibraryRefresh) window.takeoneLibraryRefresh();
   }
 
   // ------------------------------------------------------- project thread

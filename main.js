@@ -54,7 +54,7 @@ const { hfInstalledStatus } = require('./main/hf-install-check.js');
 // Phase C modules.
 const libMod = require('./main/library.js');
 const pipeMod = require('./main/pipeline.js');
-const { CATALOG, IMPLICIT_DEPS, validateCatalog, vramAllowed, estimateBytes, catalogSignature, verifyCatalog } = catalogMod;
+const { CATALOG, IMPLICIT_DEPS, validateCatalog, vramAllowed, estimateBytes, catalogSignature, verifyCatalog, effectiveAvailability } = catalogMod;
 const { DownloadManager, sha256File, postCheckResult, mapAriaStatus } = dlMod;
 const { parsePipProgress, pipInstall, hfSnapshot, installPlan } = depsMod;
 
@@ -277,7 +277,7 @@ function defaultConfig(storageRoot) {
     acknowledgedLater: false,
     niche: 'none',
     taste: {},
-    settings: { language: 'en' },
+    settings: { language: 'en', experimentalVideo: false },
   };
 }
 
@@ -671,7 +671,12 @@ async function mergedToolStates(root) {
   const dlStates = mgr ? mgr.allStates() : {};
   const tstat = await readToolStatus(root);
   let vramMB = null;
-  try { vramMB = (await readConfig(root) || {}).pcCheck?.vramMB ?? null; } catch { /* ignore */ }
+  let experimentalOn = false;
+  try {
+    const cfg = await readConfig(root);
+    vramMB = (cfg && cfg.pcCheck && cfg.pcCheck.vramMB) ?? null;
+    experimentalOn = !!(cfg && cfg.settings && cfg.settings.experimentalVideo);
+  } catch { /* config optional */ }
   for (const t of CATALOG) {
     const gate = vramAllowed(t, vramMB);
     const installed = await toolInstalled(root, t);
@@ -690,14 +695,18 @@ async function mergedToolStates(root) {
     else if (ts && ts.status === 'cancelling') { state = 'cancelling'; detail = ts.detail || 'Stopping…'; }
     else if (ts && ts.status === 'queued') { state = 'queued'; detail = ts.detail || 'Queued — starts automatically.'; }
     else if (ts && ts.status === 'failed') { state = 'failed'; error = ts.error; }
+    // M2.6-ENABLE: an experimental tool with the switch OFF surfaces as
+    // unavailable (Coming soon, no Install) through the exact WO-12/WO-16
+    // fields the UI already honors — no renderer special-casing.
+    const eff = effectiveAvailability(t, experimentalOn);
     out[t.id] = {
       state, progress, error, detail,
       // WO-12: catalog honesty reaches the UI — a tool marked unavailable in
       // main/catalog.js surfaces here so the renderer can show "Not Available"
       // and suppress its Install button.
-      unavailable: typeof t.unavailable === 'string' && t.unavailable ? t.unavailable : null,
+      unavailable: eff ? eff.unavailable : null,
       // WO-16: plain-language user text (the only text the UI shows).
-      unavailableUser: typeof t.unavailableUser === 'string' && t.unavailableUser ? t.unavailableUser : null,
+      unavailableUser: eff ? eff.unavailableUser : null,
       gateOk: gate.ok, gateReason: gate.reason || null, gateWhy: gate.whyLink || null,
       deps: IMPLICIT_DEPS[t.installType] || [],
       verifiedAt: (ts && ts.verifiedAt) || null,
@@ -884,6 +893,14 @@ async function boot() {
     if (dirty) await writeToolStatus(root, tst);
   } catch { /* non-fatal */ }
   let cfg = await readConfig(root);
+  // FIX-4: heal a stale config storageRoot field on disk (the receipt
+  // root is authoritative). A config that still names an old root used
+  // to split creation from reading; after this, disk and receipt agree.
+  if (cfg && cfg.storageRoot && cfg.storageRoot !== root) {
+    cfg.storageRoot = root;
+    try { await writeConfig(root, cfg); } catch { /* heal is best-effort */ }
+    try { global.__takeoneLog && global.__takeoneLog('FIX-4 healed stale config storageRoot -> ' + root); } catch {}
+  }
 
   if (cfg && cfg.wizardCompleted && !forceWizard) {
     // Adopt existing library (incl. reinstall-over-existing). No wizard again.
@@ -916,6 +933,16 @@ async function boot() {
 // ---------------------------------------------------------------------------
 // IPC (Electron only)
 // ---------------------------------------------------------------------------
+// FIX-4 (FINAL): after ANY project/asset mutation, the main process tells
+// the Studio window the Library changed. The Library page re-reads from
+// disk on the event — so a project created while the app runs appears
+// without a restart, whether the tab is open or opened later (the tab
+// switch ALSO re-reads; both paths exist on purpose).
+function emitLibraryChanged() {
+  try {
+    if (studioWin && !studioWin.isDestroyed()) studioWin.webContents.send('takeone:library-changed');
+  } catch { /* a dead window never breaks a save */ }
+}
 function wireIPC() {
   try { global.__takeoneLog && global.__takeoneLog('WIREIPC start'); } catch {}
   ipcMain.handle('takeone:checkPC', async (e, rootForDisk) => {
@@ -961,9 +988,20 @@ function wireIPC() {
   });
   ipcMain.handle('takeone:relaunch', async () => { app.relaunch(); app.exit(0); });
   ipcMain.handle('takeone:getConfig', async (e, root) => {
+    // FIX-4: with no explicit root, the receipt root is authoritative and
+    // the returned config's storageRoot is normalized to it — a stale
+    // field inside the config file can no longer send creation to one
+    // folder and the Library to another. (An explicit root arg is honored
+    // as-is; only the renderer's no-arg calls go through this path.)
     if (!root) {
       const receipt = await readReceipt();
       root = (receipt && receipt.storageRoot) || defaultRoot();
+      const cfg = await readConfig(root);
+      if (cfg) {
+        const srMod = (() => { try { return require('./main/storage-root.js'); } catch { return null; } })();
+        return srMod ? srMod.normalizeConfigStorageRoot(cfg, root) : cfg;
+      }
+      return cfg;
     }
     return readConfig(root);
   });
@@ -1131,6 +1169,14 @@ function wireIPC() {
       // checkpoint list from /object_info; otherwise it says unavailable.
       const over = {};
       if (comfyMgr && comfyMgr.isRunning()) over.comfyPort = comfyMgr.port;
+      // FIX-4 (Msg 1 item 4): what the Library reads vs what is on disk.
+      // A gap here means folders without project.json (orphans) or a stale
+      // list — the two things the stale-list fix must never hide.
+      try {
+        over.libraryRead = (await libMod.listProjects(r)).length;
+        const entries = await fs.promises.readdir(path.join(r, 'Projects'), { withFileTypes: true }).catch(() => []);
+        over.libraryOnDisk = entries.filter((e) => e.isDirectory()).length;
+      } catch { /* diagnostics never breaks on a Library read failure */ }
       const report = await require('./main/diagnostics.js').buildDiagnosticsReport(r, over);
       return { ok: true, report };
     } catch (err) {
@@ -1284,6 +1330,7 @@ function wireIPC() {
       if (!m) return { ok: false, reason: 'Not a PNG data URL.' };
       const target = path.join(project.dir, 'contact_sheet.png');
       await fs.promises.writeFile(target, Buffer.from(m[1], 'base64'));
+      emitLibraryChanged();
       return { ok: true, path: target };
     } catch (err) {
       return { ok: false, reason: 'Could not save the contact sheet.' };
@@ -1313,6 +1360,7 @@ function wireIPC() {
         const sidecar = path.join(project.dir, 'images', '.sidecars', `${stamp}.json`);
         await fs.promises.rename(sidecar, path.join(r, 'Trash', 'assets', `${dr.trashName}.json`));
       } catch { /* sidecar optional */ }
+      emitLibraryChanged();
       return { ok: true, trashName: dr.trashName };
     } catch (err) {
       return { ok: false, reason: 'Could not delete.' };
@@ -1328,7 +1376,7 @@ function wireIPC() {
       if (!comfyMgr) return { ok: false, error: 'Not running.' };
       const meta = qgMeta.get(promptId) || { prompt: prompt || '' };
       const res = await comfyMgr.fetchAndSaveOutput(r, promptId, meta);
-      if (res.ok) qgMeta.delete(promptId);
+      if (res.ok) { qgMeta.delete(promptId); emitLibraryChanged(); }
       return res;
     } catch (err) {
       return { ok: false, error: "The image was made but couldn't be saved." };
@@ -1350,6 +1398,16 @@ function wireIPC() {
   // /object_info actually contain the files. A missing file fails HERE
   // in plain words, not after a long queue.
   async function videoGuards(r) {
+    // M2.6-ENABLE: airtight gate — even if some path calls video
+    // generation directly, an experimental tool with the switch OFF
+    // never queues. The panel + Models page already hide it; this is
+    // the backstop, with a plain-words pointer to Settings.
+    const tool0 = toolById('video-studio');
+    if (tool0 && typeof tool0.experimental === 'string' && tool0.experimental) {
+      let on = false;
+      try { const cfg = await readConfig(r); on = !!(cfg && cfg.settings && cfg.settings.experimentalVideo); } catch { /* config optional */ }
+      if (!on) return { ok: false, error: 'Video is experimental and switched off. Turn on “Experimental: early video” in Settings to try it.', action: 'settings' };
+    }
     try { await engine.assertEngineReady(r); }
     catch (err) { return { ok: false, engineMissing: true, error: err.message }; }
     const mgr = getComfy(r);
@@ -1495,7 +1553,7 @@ function wireIPC() {
       const meta = videoMeta.get(promptId);
       if (!meta) return { ok: false, error: "The video couldn't be found. It may have been queued before this session started." };
       const res = await comfyMgr.fetchAndSaveVideoOutput(r, promptId, meta.projectId, meta);
-      if (res.ok) videoMeta.delete(promptId);
+      if (res.ok) { videoMeta.delete(promptId); emitLibraryChanged(); }
       return res;
     } catch (err) {
       return { ok: false, error: "The video was made but couldn't be saved." };
@@ -1510,6 +1568,7 @@ function wireIPC() {
       if (!m) return { ok: false, reason: 'Not a PNG data URL.' };
       const target = path.join(r, 'Projects', projectId, 'videos', `${baseName}_thumb.png`);
       await fs.promises.writeFile(target, Buffer.from(m[1], 'base64'));
+      emitLibraryChanged();
       return { ok: true, path: target };
     } catch { return { ok: false, reason: 'Could not save the thumbnail.' }; }
   });
@@ -1520,6 +1579,7 @@ function wireIPC() {
       if (!m) return { ok: false, reason: 'Not a PNG data URL.' };
       const target = path.join(r, 'Projects', projectId, 'contact_sheet_video.png');
       await fs.promises.writeFile(target, Buffer.from(m[1], 'base64'));
+      emitLibraryChanged();
       return { ok: true, path: target };
     } catch { return { ok: false, reason: 'Could not save the contact sheet.' }; }
   });
@@ -1813,11 +1873,11 @@ function wireIPC() {
     catch (err) { return { ok: false, reason: String(err.message || err) }; }
   });
   ipcMain.handle('takeone:createProject', async (e, root, name) => {
-    try { return await libMod.createProject(needRoot(root), name); }
+    try { const res = await libMod.createProject(needRoot(root), name); if (res.ok) emitLibraryChanged(); return res; }
     catch (err) { return { ok: false, reason: String(err.message || err) }; }
   });
   ipcMain.handle('takeone:renameProject', async (e, root, id, name) => {
-    try { return await libMod.renameProject(needRoot(root), id, name); }
+    try { const res = await libMod.renameProject(needRoot(root), id, name); if (res.ok) emitLibraryChanged(); return res; }
     catch (err) { return { ok: false, reason: String(err.message || err) }; }
   });
   ipcMain.handle('takeone:getProject', async (e, root, id) => {
@@ -1918,15 +1978,16 @@ function wireIPC() {
       for (const fp of pick.filePaths) {
         results.push(await libMod.importAsset(needRoot(root), id, fp, opts || {}));
       }
+      emitLibraryChanged();
       return { ok: true, results };
     } catch (err) { return { ok: false, reason: String(err.message || err) }; }
   });
   ipcMain.handle('takeone:deleteAsset', async (e, root, id, rel) => {
-    try { return await libMod.deleteAsset(needRoot(root), id, rel); }
+    try { const res = await libMod.deleteAsset(needRoot(root), id, rel); if (res.ok) emitLibraryChanged(); return res; }
     catch (err) { return { ok: false, reason: String(err.message || err) }; }
   });
   ipcMain.handle('takeone:trashProject', async (e, root, id) => {
-    try { return await libMod.trashProject(needRoot(root), id); }
+    try { const res = await libMod.trashProject(needRoot(root), id); if (res.ok) emitLibraryChanged(); return res; }
     catch (err) { return { ok: false, reason: String(err.message || err) }; }
   });
   ipcMain.handle('takeone:listTrash', async (e, root) => {
@@ -1934,15 +1995,15 @@ function wireIPC() {
     catch (err) { return { ok: false, reason: String(err.message || err) }; }
   });
   ipcMain.handle('takeone:restoreFromTrash', async (e, root, trashName, kind) => {
-    try { return await libMod.restoreFromTrash(needRoot(root), trashName, kind); }
+    try { const res = await libMod.restoreFromTrash(needRoot(root), trashName, kind); if (res.ok) emitLibraryChanged(); return res; }
     catch (err) { return { ok: false, reason: String(err.message || err) }; }
   });
   ipcMain.handle('takeone:deleteForever', async (e, root, trashName, kind) => {
-    try { return await libMod.deleteForever(needRoot(root), trashName, kind); }
+    try { const res = await libMod.deleteForever(needRoot(root), trashName, kind); if (res.ok) emitLibraryChanged(); return res; }
     catch (err) { return { ok: false, reason: String(err.message || err) }; }
   });
   ipcMain.handle('takeone:emptyTrash', async (e, root) => {
-    try { return await libMod.emptyTrash(needRoot(root)); }
+    try { const res = await libMod.emptyTrash(needRoot(root)); if (res.ok) emitLibraryChanged(); return res; }
     catch (err) { return { ok: false, reason: String(err.message || err) }; }
   });
   ipcMain.handle('takeone:analyzeScript', async (e, text) => {
@@ -1974,6 +2035,19 @@ function wireIPC() {
       const r = needRoot(root);
       const cfg = (await readConfig(r)) || defaultConfig(r);
       cfg.niche = typeof niche === 'string' ? niche : 'none';
+      await writeConfig(r, cfg);
+      return { ok: true };
+    } catch (err) { return { ok: false, reason: String(err.message || err) }; }
+  });
+  // M2.6-ENABLE: the "Experimental: early video" switch (Settings).
+  // Default OFF (missing field = OFF). The renderer relaunches after
+  // toggling so the Models page + Video panel re-read it on boot.
+  ipcMain.handle('takeone:setExperimentalVideo', async (e, root, on) => {
+    try {
+      const r = needRoot(root);
+      const cfg = (await readConfig(r)) || defaultConfig(r);
+      cfg.settings = cfg.settings || {};
+      cfg.settings.experimentalVideo = !!on;
       await writeConfig(r, cfg);
       return { ok: true };
     } catch (err) { return { ok: false, reason: String(err.message || err) }; }

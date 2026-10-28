@@ -19,7 +19,16 @@ deviceScaleFactor 1.25), it screenshots the window and runs checks:
   - Studio only: #qgPrompt must be a TEXTAREA that auto-grows (a long
     pasted value grows the box and stays fully visible, no hidden overflow).
   - Library only: a .projthumb <img> with naturalWidth > 0.
-  - Settings only: "Data folder" text + the diagnostics button present.
+  - Settings only: ONE "TakeOne folder" card (the old "Data folder" card
+    is merged into it — FIX-4 FINAL item 4) + the diagnostics button.
+  - Models only (M2.6-ENABLE, switch OFF by default): the video-studio
+    card shows "Coming soon", no Install button path.
+  - Studio only (M2.6-ENABLE OFF): the Video panel shows "Coming soon".
+  - FIX-4 late-project check (after the viewport loop): the Library page
+    was opened FIRST; a project is then created through real IPC while
+    the app runs; navigate away and back — the new card must appear.
+    This is the test that catches the stale-list bug (a seeded project
+    would pass without any fix, so the created project is never seeded).
 
 All screenshots are composed into contact_sheet.png (grid: screens as
 rows, viewports as columns) with a report.json. Any failed check, or a
@@ -256,6 +265,12 @@ def main():
                     checks = page.evaluate(CHECKS_JS)
                     extra = {}
                     if view == "studio":
+                        # M2.6-ENABLE OFF: the Video panel must read Coming
+                        # soon (refreshVideoState runs after IPC, so wait).
+                        page.wait_for_function(
+                            "() => { const d = document.querySelector('#videoDl');"
+                            " return !!d && d.innerText.includes('Coming soon'); }",
+                            timeout=30000)
                         extra["prompt"] = page.evaluate(PROMPT_JS)
                         # M2: the Video panel lives in Studio too — same
                         # bar as Quick Generate: multi-line prompt
@@ -271,12 +286,23 @@ def main():
                         extra["thumb"] = page.evaluate(
                             "() => [...document.querySelectorAll('.projthumb')].some((i) => i.naturalWidth > 0)")
                     if view == "settings":
-                        # The card label is uppercased by CSS, so innerText
-                        # reads "DATA FOLDER" — match case-insensitively.
-                        extra["dataFolder"] = page.evaluate(
-                            "() => document.body.innerText.toLowerCase().includes('data folder')")
+                        # FIX-4 FINAL item 4: ONE folder card. The label is
+                        # uppercased by CSS, so match case-insensitively;
+                        # the old "Data folder" card must be GONE.
+                        extra["folderCard"] = page.evaluate(
+                            "() => { const t = document.body.innerText.toLowerCase();"
+                            " return { merged: t.includes('takeone folder') && !t.includes('data folder') }; }")
                         extra["diagnosticsBtn"] = page.evaluate(
                             "() => !!document.querySelector('#copyDiagnostics')")
+                    if view == "models":
+                        # M2.6-ENABLE OFF: video-studio must read Coming
+                        # soon (cards render after IPC states load, so wait).
+                        page.wait_for_function(
+                            "() => !!document.querySelector('.tcard[data-tool=\"video-studio\"]')",
+                            timeout=30000)
+                        extra["videoSoon"] = page.evaluate(
+                            "() => { const c = document.querySelector('.tcard[data-tool=\"video-studio\"]');"
+                            " return !!c && c.innerText.includes('Coming soon'); }")
                     view_fail = []
                     if checks["clipped"]:
                         view_fail.append(f"clipped text: {checks['clipped'][:5]}")
@@ -292,8 +318,10 @@ def main():
                             view_fail.append(f"video panel incomplete: {v}")
                     if view == "library" and not extra["thumb"]:
                         view_fail.append("no Library card thumbnail rendered (naturalWidth 0)")
-                    if view == "settings" and not (extra["dataFolder"] and extra["diagnosticsBtn"]):
-                        view_fail.append(f"settings missing data folder / diagnostics button: {extra}")
+                    if view == "settings" and not (extra["folderCard"]["merged"] and extra["diagnosticsBtn"]):
+                        view_fail.append(f"settings folder cards not merged / diagnostics button missing: {extra}")
+                    if view == "models" and not extra["videoSoon"]:
+                        view_fail.append(f"models video-studio card is not Coming soon (switch OFF expected): {extra}")
                     report[view][label] = {
                         "screenshot": shot.name, "checks": checks, "extra": extra,
                         "failures": view_fail,
@@ -301,6 +329,34 @@ def main():
                     if view_fail:
                         failures.append(f"{view} {label}: " + "; ".join(view_fail))
                     print(f"{view} {label}: {'FAIL ' + '; '.join(view_fail) if view_fail else 'OK'}")
+            # FIX-4 (FINAL item 3) — the bug-catching test. The Library
+            # page was opened FIRST (in the loop above); now create a
+            # project through REAL IPC while the app runs, navigate away
+            # and back, and the new card must appear. A seeded project
+            # would pass with no fix at all — this one is created live.
+            try:
+                page.click('.railbtn[data-view="library"]')
+                page.wait_for_timeout(800)
+                before = page.evaluate("() => document.querySelectorAll('.projcard').length")
+                created = page.evaluate("""async () => {
+                  const cfg = await window.takeone.getConfig();
+                  return window.takeone.createProject(cfg.storageRoot, 'Audit Late Project');
+                }""")
+                if not (created and created.get('ok')):
+                    failures.append(f"FIX-4 late-project: createProject failed: {created}")
+                else:
+                    page.click('.railbtn[data-view="studio"]')
+                    page.wait_for_timeout(800)
+                    page.click('.railbtn[data-view="library"]')
+                    page.wait_for_timeout(800)
+                    after = page.evaluate("() => document.querySelectorAll('.projcard').length")
+                    names = page.evaluate("() => [...document.querySelectorAll('.projcard')].map((c) => c.innerText)")
+                    if after != before + 1 or not any('Audit Late Project' in n for n in names):
+                        failures.append(f"FIX-4 late-project: before={before} after={after} names={names}")
+                    else:
+                        print(f"FIX-4 late-project: OK (cards {before} -> {after}, new project listed)")
+            except Exception as e:  # noqa: BLE001 — any harness error fails the audit
+                failures.append(f"FIX-4 late-project harness error: {e}")
     finally:
         # Kill the whole process group: xvfb-run, Xvfb, AND Electron.
         # (proc.terminate() alone leaves Electron alive on its CDP port.)

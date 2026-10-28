@@ -158,6 +158,12 @@ async function storageSection(root, over = {}) {
     } catch { prot = 'unknown'; }
   }
   lines.push(`Protected folder: ${prot}`);
+  // FIX-4 (Msg 1 item 4): what the Library reads vs what is on disk.
+  // A gap means folders without project.json (orphans) — never hidden.
+  if (over.libraryRead !== undefined || over.libraryOnDisk !== undefined) {
+    lines.push(`Library projects read: ${over.libraryRead ?? '?'}`);
+    lines.push(`Projects on disk: ${over.libraryOnDisk ?? '?'}`);
+  }
   // WO-39: run both PowerShell queries in parallel — each has its own 5 s
   // timeout, so the section never takes more than ~5 s total.
   const [sec, blocks] = await Promise.all([

@@ -88,7 +88,25 @@ function blockedMessage(folder) {
   };
 }
 
+/** FIX-4: the ONE authoritative root. The receipt (written by boot after
+ *  the WO-39 protected-folder / blocked-folder resolution) beats any
+ *  stale storageRoot field inside a config file. Pure: receipt is the
+ *  parsed receipt.json (or null), fallback is defaultRoot(). */
+function resolvePrimaryRoot(receipt, fallbackRoot) {
+  return (receipt && receipt.storageRoot) || fallbackRoot;
+}
+
+/** FIX-4: a config whose storageRoot field still names an old root must
+ *  never split creation from reading again — the returned config
+ *  carries the primary root. Pure; returns null for a missing config. */
+function normalizeConfigStorageRoot(cfg, primaryRoot) {
+  if (!cfg || typeof cfg !== 'object') return null;
+  if (cfg.storageRoot === primaryRoot) return cfg;
+  return { ...cfg, storageRoot: primaryRoot };
+}
+
 module.exports = {
   defaultRoot, protectedFolders, isProtectedFolder,
   probeWritable, isBlockedBySecurity, blockedMessage,
+  resolvePrimaryRoot, normalizeConfigStorageRoot,
 };

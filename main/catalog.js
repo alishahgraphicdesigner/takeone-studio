@@ -21,6 +21,15 @@
  * unavailable: '<reason>' — the tool is listed for honesty but must NOT be
  * offered for install until the reason clears (WO-6; evidence comes from WO-8).
  * Its installBytes/firstRunBytes/installScope are null while withheld.
+ *
+ * experimental: '<reason>' — M2.6-ENABLE: the tool is built and its files
+ * are complete, but its first real run on a GPU PC is unproven. It is
+ * offered ONLY when Settings > "Experimental: early video" is ON; when
+ * OFF, mergedToolStates maps it to unavailable (same Coming-soon UI as
+ * `unavailable`, with experimentalUser as the user text). The catalog
+ * gate (tools/audit-catalog.js, Ali's script — never edited here) audits
+ * an experimental tool as an offered tool, so its files/commit/license
+ * must already be complete and honest.
  */
 'use strict';
 const crypto = require('crypto');
@@ -72,16 +81,16 @@ const CATALOG = [
     id: 'video-studio', group: 'Video',
     friendlyName: 'Video Studio', technical: 'Wan 2.2 TI2V-5B',
     installType: 'hf',
-    // M2: the entry is complete (files[] + pinned commit + license) but
-    // STAYS unavailable until the CI validation (M2.5) AND the first GPU
-    // render — the video Ali pack (M2.6) — are both green. The Models
-    // page keeps showing "Coming soon" with no Install button until then;
-    // the Studio Video panel is the trial path (it can download the
-    // model itself and says plainly that the first GPU render is unproven).
+    // M2.6-ENABLE (replaces M2's `unavailable`): the entry is complete
+    // (files[] + pinned commit + license) and CI-validated (M2.5 green),
+    // but no real clip has rendered on a GPU PC yet (the video Ali pack,
+    // M2.6, is still to run). The tool is OFFERED only when Settings >
+    // "Experimental: early video" is ON; otherwise the Models page shows
+    // "Coming soon" and the Video panel hides its download/generate path.
     // NOTE: video-pro already lists this same model (its own tier entry);
     // it is untouched here — dedup is Claude's call, not a silent edit.
-    unavailable: 'Not available yet: the video workflow is built and CI-validated, but no real clip has rendered on a GPU PC yet (the video Ali pack, M2.6, is still to run). Withheld until that first GPU render is green.',
-    unavailableUser: 'Coming soon. Video is built and checked, but its first real clip on a PC like yours has not run yet. Nothing for you to do.', repo: 'Wan-AI/Wan2.2-TI2V-5B',
+    experimental: 'Experimental: the video workflow is built and CI-validated, but no real clip has rendered on a GPU PC yet (the video Ali pack, M2.6, is still to run). Offered only with Settings > Experimental: early video ON.',
+    experimentalUser: 'Coming soon. Video is experimental and switched off — turn on “Experimental: early video” in Settings to try it before its first real clip is proven.', repo: 'Wan-AI/Wan2.2-TI2V-5B',
     commit: '921dbaf3f1674a56f47e83fb80a34bac8a8f203e',
     files: [
       { path: 'models_t5_umt5-xxl-enc-bf16.pth', bytes: 11361920418, sha256: '7cace0da2b446bbbbc57d031ab6cf163a3d59b366da94e5afe36745b746fd81d' },
@@ -479,6 +488,28 @@ function validateCatalog(cat) {
 }
 
 /** Gate 2 poka-yoke: can this tool be selected on this PC? Pure. */
+/**
+ * M2.6-ENABLE: effective availability of one catalog tool, given the
+ * experimental switch. Pure (unit-tested). Returns the unavailable pair
+ * the UI/gates already understand, or null when the tool is offered:
+ *  - tool.unavailable -> always unavailable (unchanged WO-12 behavior).
+ *  - tool.experimental && !experimentalOn -> unavailable, with the
+ *    experimentalUser text (the Coming-soon box the user already knows).
+ *  - tool.experimental && experimentalOn -> offered (null).
+ *  - neither flag -> offered (null).
+ */
+function effectiveAvailability(tool, experimentalOn) {
+  if (!tool) return null;
+  if (typeof tool.unavailable === 'string' && tool.unavailable) {
+    return { unavailable: tool.unavailable, unavailableUser: tool.unavailableUser || null };
+  }
+  if (typeof tool.experimental === 'string' && tool.experimental) {
+    if (experimentalOn) return null;
+    return { unavailable: tool.experimental, unavailableUser: tool.experimentalUser || null };
+  }
+  return null;
+}
+
 function vramAllowed(tool, vramMB) {
   if (!tool) return { ok: false, reason: 'Unknown tool.' };
   if (tool.tier24 && vramMB !== null && vramMB < 24576) {
@@ -518,6 +549,6 @@ function verifyCatalog(sha) {
 
 module.exports = {
   CATALOG, IMPLICIT_DEPS, REQUIRED_FIELDS,
-  validateCatalog, vramAllowed, estimateBytes,
+  validateCatalog, vramAllowed, estimateBytes, effectiveAvailability,
   canonicalCatalog, catalogSignature, verifyCatalog,
 };
