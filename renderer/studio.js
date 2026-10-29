@@ -93,6 +93,14 @@
         `<label><input type="checkbox" id="expVideoSwitch" ${(cfg.settings && cfg.settings.experimentalVideo) ? 'checked' : ''}> Try video before it is proven</label>` +
         `<p class="muted small">Warning: video is early and unproven — clips may fail, take a long time, or use a lot of disk (the model alone is about 34 GB). Only switch this on if you want to test video early. When off, video shows “Coming soon”.</p>` +
         `<span class="muted small" id="expVideoNote"></span>`) +
+      // M3: the image-models switch — SEPARATE from video (its own
+      // setting, its own card). Same plain-words warning + relaunch
+      // contract: Z-Image Turbo (~20 GB) + FLUX.2 Klein 4B (~16 GB),
+      // neither proven on a GPU PC yet.
+      card('Experimental: image models', (cfg.settings && cfg.settings.experimentalImageModels) ? 'On' : 'Off',
+        `<label><input type="checkbox" id="expImageModelsSwitch" ${(cfg.settings && cfg.settings.experimentalImageModels) ? 'checked' : ''}> Try new image models before they are proven</label>` +
+        `<p class="muted small">Warning: Z-Image Turbo and FLUX.2 Klein 4B are early and unproven — images may fail or use a lot of disk (about 20 GB + 16 GB). Only switch this on if you want to compare them against Image Studio early. When off, both show “Coming soon”.</p>` +
+        `<span class="muted small" id="expImageModelsNote"></span>`) +
       // WO-32: one-click diagnostics — plain-text report on the clipboard (user names masked, no secrets).
       card('Diagnostics', 'App version, Windows, GPU, engine status and recent logs as plain text.',
         `<button class="link" id="copyDiagnostics">Copy diagnostics</button> <span class="muted small" id="diagNote"></span>`);
@@ -116,6 +124,16 @@
         note.textContent = 'Saved — restarting so the change takes effect…';
         setTimeout(() => window.takeone.relaunch(), 600);
       } catch { note.textContent = 'Could not save — try again.'; evSwitch.checked = !evSwitch.checked; }
+    });
+    const imSwitch = $('#expImageModelsSwitch');
+    if (imSwitch) imSwitch.addEventListener('change', async () => {
+      const note = $('#expImageModelsNote');
+      try {
+        const r = await window.takeone.setExperimentalImageModels(root, imSwitch.checked);
+        if (!r || !r.ok) { note.textContent = 'Could not save — try again.'; imSwitch.checked = !imSwitch.checked; return; }
+        note.textContent = 'Saved — restarting so the change takes effect…';
+        setTimeout(() => window.takeone.relaunch(), 600);
+      } catch { note.textContent = 'Could not save — try again.'; imSwitch.checked = !imSwitch.checked; }
     });
     $('#changeFolder2').addEventListener('click', async () => {
       const p = await window.takeone.pickFolder();

@@ -47,6 +47,7 @@ const dns = require('dns');
 // Phase B modules (pure parts unit-tested; classes need real binaries).
 try { global.__takeoneLog && global.__takeoneLog('REQ catalog'); } catch {}
 const catalogMod = require('./main/catalog.js');
+const { decideToolState } = require('./main/tool-states.js');
 try { global.__takeoneLog && global.__takeoneLog('REQ catalog OK'); } catch {}
 const dlMod = require('./main/downloads.js');
 const depsMod = require('./main/deps.js');
@@ -277,7 +278,7 @@ function defaultConfig(storageRoot) {
     acknowledgedLater: false,
     niche: 'none',
     taste: {},
-    settings: { language: 'en', experimentalVideo: false },
+    settings: { language: 'en', experimentalVideo: false, experimentalImageModels: false },
   };
 }
 
@@ -573,6 +574,11 @@ async function ensurePython(root, onProgress) {
 let dlm = null;
 let dlmRoot = null;
 let dlmStarting = null;
+// FIX-8: tools whose finished download failed verification get ONE
+// automatic resume-aware re-queue per session (good files reused, only
+// bad files re-fetched). The guard lives here so a read path
+// (toolStates, called on every render) can never loop downloads.
+const autoRetryDone = new Set();
 
 function aria2cPath() {
   if (process.env.TAKEONE_ARIA2) return process.env.TAKEONE_ARIA2;
@@ -671,30 +677,39 @@ async function mergedToolStates(root) {
   const dlStates = mgr ? mgr.allStates() : {};
   const tstat = await readToolStatus(root);
   let vramMB = null;
-  let experimentalOn = false;
+  // M3: both experimental switches, as an object — effectiveAvailability
+  // keys each experimental tool to its own switch (video vs imageModels).
+  const experimentalOn = { video: false, imageModels: false };
   try {
     const cfg = await readConfig(root);
     vramMB = (cfg && cfg.pcCheck && cfg.pcCheck.vramMB) ?? null;
-    experimentalOn = !!(cfg && cfg.settings && cfg.settings.experimentalVideo);
+    experimentalOn.video = !!(cfg && cfg.settings && cfg.settings.experimentalVideo);
+    experimentalOn.imageModels = !!(cfg && cfg.settings && cfg.settings.experimentalImageModels);
   } catch { /* config optional */ }
   for (const t of CATALOG) {
     const gate = vramAllowed(t, vramMB);
     const installed = await toolInstalled(root, t);
     const dl = dlStates[t.id];
     const ts = tstat[t.id];
-    let state = 'not-installed';
-    let progress = 0, error = null, detail = null;
-    if (installed) { state = 'installed'; }
-    else if (dl && dl.status === 'done') {
-      state = 'not-installed'; // finished on record but the file is gone — allow a fresh download
+    // FIX-8: the manifest detail for the done-but-not-installed case
+    // (hfInstalledStatus's `bad`: first mismatching file + reason).
+    // Without it the UI could only say "not installed" — the lie.
+    let bad = null;
+    if (!installed && dl && dl.status === 'done' && t.installType === 'hf') {
+      try { bad = (await hfInstalledStatus(path.join(toolDestDir(root, t), t.id), t.files)).bad; } catch { /* keep null */ }
     }
-    else if (dl) {
-      state = dl.status; progress = dl.progress || 0; error = dl.error || null;
-      if (dl.status === 'retrying') detail = 'Retrying automatically…';
-    } else if (ts && ts.status === 'installing') { state = 'installing'; progress = ts.fraction || 0; detail = ts.note; }
-    else if (ts && ts.status === 'cancelling') { state = 'cancelling'; detail = ts.detail || 'Stopping…'; }
-    else if (ts && ts.status === 'queued') { state = 'queued'; detail = ts.detail || 'Queued — starts automatically.'; }
-    else if (ts && ts.status === 'failed') { state = 'failed'; error = ts.error; }
+    const dec = decideToolState({ installed, dl, ts, bad });
+    const { state, progress, error, detail } = dec;
+    // FIX-8 item 4: one automatic resume-aware re-queue per session.
+    // The re-queued job reuses verified files (size match skips) and
+    // re-fetches only the mismatching ones; a second failure stays
+    // 'failed' with its plain error and a manual Try again.
+    if (dec.needsAutoRetry && mgr && !autoRetryDone.has(t.id)) {
+      autoRetryDone.add(t.id);
+      const p = t.installType === 'hf' ? mgr.addHfDownload(t)
+        : t.installType === 'file' ? mgr.addDownload(t) : Promise.resolve();
+      p.catch(() => { /* the failed state above is what the UI shows */ });
+    }
     // M2.6-ENABLE: an experimental tool with the switch OFF surfaces as
     // unavailable (Coming soon, no Install) through the exact WO-12/WO-16
     // fields the UI already honors — no renderer special-casing.
@@ -1093,7 +1108,8 @@ function wireIPC() {
   // why ComfyUI's checkpoint list was empty on Ali's PC.
   const { createEngineComfy, MODEL_NOT_VISIBLE_MSG, VIDEO_NOT_VISIBLE_MSG } = require('./main/comfy.js');
   const { sdxlLightningTxt2Img, aspectDims, DEFAULT_NEGATIVE, presetParams, buildAliPackJobs,
-    wanVideo, videoDims, videoFrames, VIDEO_DEFAULTS, DEFAULT_VIDEO_NEGATIVE, buildVideoAliPackJobs } = require('./main/comfy-workflows.js');
+    wanVideo, videoDims, videoFrames, VIDEO_DEFAULTS, DEFAULT_VIDEO_NEGATIVE, buildVideoAliPackJobs,
+    zImage, fluxKlein, IMAGE_MODEL_FILES, buildImageModelsPackJobs } = require('./main/comfy-workflows.js');
   const videoModel = require('./main/video-model.js');
   const engine = require('./main/engine.js');
   let comfyMgr = null;
@@ -1177,6 +1193,29 @@ function wireIPC() {
         const entries = await fs.promises.readdir(path.join(r, 'Projects'), { withFileTypes: true }).catch(() => []);
         over.libraryOnDisk = entries.filter((e) => e.isDirectory()).length;
       } catch { /* diagnostics never breaks on a Library read failure */ }
+      // FIX-8 item 1: video-studio files vs manifest, first mismatch,
+      // raw download record, derived tool state. Derived via the pure
+      // decideToolState (same decision as toolStates) so diagnostics
+      // never triggers the automatic re-queue — it only reports.
+      try {
+        const vs = toolById('video-studio');
+        if (vs) {
+          const dir = path.join(r, 'Models', vs.category || 'video', vs.id);
+          const chk = await hfInstalledStatus(dir, vs.files);
+          const files = [];
+          for (const f of vs.files) {
+            let size = null;
+            try { size = (await fs.promises.stat(path.join(dir, f.path))).size; } catch { /* missing */ }
+            files.push({ path: f.path, size, expected: f.bytes });
+          }
+          const mgr = dlm && dlmRoot === r ? dlm : null;
+          const dl = mgr ? (mgr.allStates()['video-studio'] || null) : null;
+          let ts = null;
+          try { ts = (await readToolStatus(r))['video-studio'] || null; } catch { /* ignore */ }
+          const dec = decideToolState({ installed: chk.complete, dl, ts, bad: chk.bad });
+          over.videoStudio = { dir, files, firstMismatch: chk.bad, dlState: dl, toolState: dec.state, toolError: dec.error };
+        }
+      } catch { /* diagnostics never breaks on a video-studio check failure */ }
       const report = await require('./main/diagnostics.js').buildDiagnosticsReport(r, over);
       return { ok: true, report };
     } catch (err) {
@@ -1329,6 +1368,109 @@ function wireIPC() {
       const m = /^data:image\/png;base64,(.+)$/.exec(String(dataUrl || ''));
       if (!m) return { ok: false, reason: 'Not a PNG data URL.' };
       const target = path.join(project.dir, 'contact_sheet.png');
+      await fs.promises.writeFile(target, Buffer.from(m[1], 'base64'));
+      emitLibraryChanged();
+      return { ok: true, path: target };
+    } catch (err) {
+      return { ok: false, reason: 'Could not save the contact sheet.' };
+    }
+  });
+  // M3: the image-models Ali pack — 3 prompts x 3 models, ONE seed
+  // (buildImageModelsPackJobs). Queues all 9; the renderer polls each
+  // promptId and assembles ONE 3x3 contact sheet. Refuses while the
+  // image-models switch is OFF, and names any model that is not
+  // installed yet instead of queueing a prompt ComfyUI will reject.
+  ipcMain.handle('takeone:comfyGenerateImageModelsPack', async (e, root, params) => {
+    const r = root || defaultRoot();
+    try {
+      const cfg = await readConfig(r);
+      if (!(cfg && cfg.settings && cfg.settings.experimentalImageModels)) {
+        return { ok: false, error: 'Image models are experimental and switched off. Turn on “Experimental: image models” in Settings first.', action: 'settings' };
+      }
+    } catch { return { ok: false, error: 'Could not read your settings.' }; }
+    try { await engine.assertEngineReady(r); }
+    catch (err) { return { ok: false, engineMissing: true, error: err.message }; }
+    const mgr = getComfy(r);
+    if (!mgr.isRunning()) {
+      const st = await mgr.start();
+      if (!st.ok) return st;
+    }
+    const missing = [];
+    for (const id of ['image-studio', 'z-image-turbo', 'flux2-klein-4b']) {
+      const tool = toolById(id);
+      if (!tool || !(await toolInstalled(r, tool))) missing.push(tool ? tool.friendlyName : id);
+    }
+    if (missing.length) {
+      return { ok: false, error: `Not installed yet: ${missing.join(', ')}. Open Models and download them first.`, action: 'models' };
+    }
+    // Preflight: are the loader names visible to ComfyUI? A missing
+    // name here means the extra_model_paths mapping is wrong — fail in
+    // plain words instead of queueing 9 prompts ComfyUI rejects.
+    // (Preflight failure itself is not fatal: queueing surfaces a plain
+    // error if a model really is missing.)
+    try {
+      const info = await mgr.getObjectInfo();
+      if (info && info.ok && info.info) {
+        const listOf = (node, input) => {
+          try {
+            const spec = info.info[node] && info.info[node].input && info.info[node].input.required
+              && info.info[node].input.required[input];
+            return Array.isArray(spec && spec[0]) ? spec[0].map((s) => String(s).replace(/\\/g, '/')) : [];
+          } catch { return []; }
+        };
+        const unets = listOf('UNETLoader', 'unet_name');
+        const clips = listOf('CLIPLoader', 'clip_name');
+        const vaes = listOf('VAELoader', 'vae_name');
+        const want = ['z_image_turbo_bf16.safetensors', 'flux-2-klein-4b.safetensors', 'qwen_3_4b.safetensors', 'ae.safetensors', 'flux2-vae.safetensors'];
+        const absent = want.filter((n) => !(unets.includes(n) || clips.includes(n) || vaes.includes(n)));
+        if (absent.length) {
+          return { ok: false, modelNotVisible: true, error: `ComfyUI cannot see these model files: ${absent.join(', ')}. They are downloaded but not visible — check Models, then try again.`, action: 'models' };
+        }
+      }
+    } catch { /* preflight optional */ }
+    const seed = Number.isFinite(Number(params && params.seed)) && params.seed !== '' && params.seed !== null
+      ? Math.floor(Number(params.seed)) : Math.floor(Math.random() * 1000000000);
+    const jobs = buildImageModelsPackJobs(seed);
+    const queued = [];
+    for (const job of jobs) {
+      let workflow;
+      if (job.model === 'z-image-turbo') {
+        const f = IMAGE_MODEL_FILES['z-image-turbo'];
+        workflow = zImage({ unet: f.unet, clip: f.clip, vae: f.vae, positive: job.prompt, width: job.width, height: job.height, seed: job.seed });
+      } else if (job.model === 'flux2-klein-4b') {
+        const f = IMAGE_MODEL_FILES['flux2-klein-4b'];
+        workflow = fluxKlein({ unet: f.unet, clip: f.clip, vae: f.vae, positive: job.prompt, width: job.width, height: job.height, seed: job.seed });
+      } else {
+        const tool = toolById('image-studio');
+        workflow = sdxlLightningTxt2Img({
+          checkpoint: tool.fileName, positive: job.prompt, negative: DEFAULT_NEGATIVE,
+          width: job.width, height: job.height, seed: job.seed, steps: 4, cfg: 1,
+        });
+      }
+      const q = await mgr.queuePrompt(workflow);
+      if (!q.ok) {
+        try { global.__takeoneLog && global.__takeoneLog('comfyGenerateImageModelsPack raw error: ' + (q.rawError || q.error)); } catch {}
+        const { rawError, ...plain } = q;
+        return plain;
+      }
+      qgMeta.set(q.promptId, {
+        prompt: job.prompt, model: job.model, seed: job.seed,
+        width: job.width, height: job.height,
+      });
+      queued.push({ ...job, promptId: q.promptId });
+    }
+    return { ok: true, seed, jobs: queued };
+  });
+  // M3: save the image-models pack contact sheet (a dataUrl from the
+  // renderer's canvas) into the Quick Generate project as its OWN file
+  // — never overwriting the M1 pack's contact_sheet.png.
+  ipcMain.handle('takeone:saveImageModelsSheet', async (e, root, dataUrl) => {
+    try {
+      const r = root || defaultRoot();
+      const project = await libMod.ensureQuickGenerateProject(r);
+      const m = /^data:image\/png;base64,(.+)$/.exec(String(dataUrl || ''));
+      if (!m) return { ok: false, reason: 'Not a PNG data URL.' };
+      const target = path.join(project.dir, 'image_models_sheet.png');
       await fs.promises.writeFile(target, Buffer.from(m[1], 'base64'));
       emitLibraryChanged();
       return { ok: true, path: target };
@@ -1986,9 +2128,24 @@ function wireIPC() {
     try { const res = await libMod.deleteAsset(needRoot(root), id, rel); if (res.ok) emitLibraryChanged(); return res; }
     catch (err) { return { ok: false, reason: String(err.message || err) }; }
   });
+  // FIX-7: Trash failures must reach the user in plain words, with the
+  // raw error in the app log (never a raw EPERM string in a notice,
+  // never silent). The lib functions' own ok:false reasons are already
+  // plain; only THROWN errors (e.g. a Windows file lock mid-rename)
+  // come through here.
+  const trashFail = (err) => {
+    const raw = String((err && err.stack) || err);
+    try { if (global.__takeoneLog) global.__takeoneLog('TRASH-FAIL: ' + raw); } catch { /* ignore */ }
+    try { console.error('[trash]', raw); } catch { /* ignore */ }
+    const code = String((err && err.code) || '').toUpperCase();
+    if (['EPERM', 'EACCES', 'EBUSY'].includes(code)) {
+      return { ok: false, reason: 'Windows is holding one of this project\'s files, so it could not be moved. Close any program showing these files and try again.' };
+    }
+    return { ok: false, reason: 'Could not finish that Trash action. The full error is in the app log.' };
+  };
   ipcMain.handle('takeone:trashProject', async (e, root, id) => {
     try { const res = await libMod.trashProject(needRoot(root), id); if (res.ok) emitLibraryChanged(); return res; }
-    catch (err) { return { ok: false, reason: String(err.message || err) }; }
+    catch (err) { return trashFail(err); }
   });
   ipcMain.handle('takeone:listTrash', async (e, root) => {
     try { return { ok: true, trash: await libMod.listTrash(needRoot(root)) }; }
@@ -1996,15 +2153,15 @@ function wireIPC() {
   });
   ipcMain.handle('takeone:restoreFromTrash', async (e, root, trashName, kind) => {
     try { const res = await libMod.restoreFromTrash(needRoot(root), trashName, kind); if (res.ok) emitLibraryChanged(); return res; }
-    catch (err) { return { ok: false, reason: String(err.message || err) }; }
+    catch (err) { return trashFail(err); }
   });
   ipcMain.handle('takeone:deleteForever', async (e, root, trashName, kind) => {
     try { const res = await libMod.deleteForever(needRoot(root), trashName, kind); if (res.ok) emitLibraryChanged(); return res; }
-    catch (err) { return { ok: false, reason: String(err.message || err) }; }
+    catch (err) { return trashFail(err); }
   });
   ipcMain.handle('takeone:emptyTrash', async (e, root) => {
     try { const res = await libMod.emptyTrash(needRoot(root)); if (res.ok) emitLibraryChanged(); return res; }
-    catch (err) { return { ok: false, reason: String(err.message || err) }; }
+    catch (err) { return trashFail(err); }
   });
   ipcMain.handle('takeone:analyzeScript', async (e, text) => {
     try { return pipeMod.analyzeScript(text); }
@@ -2048,6 +2205,20 @@ function wireIPC() {
       const cfg = (await readConfig(r)) || defaultConfig(r);
       cfg.settings = cfg.settings || {};
       cfg.settings.experimentalVideo = !!on;
+      await writeConfig(r, cfg);
+      return { ok: true };
+    } catch (err) { return { ok: false, reason: String(err.message || err) }; }
+  });
+  // M3: the "Experimental: image models" switch (Settings) — the video
+  // switch's twin, but a SEPARATE setting: turning on video must never
+  // offer the image models, or vice versa. Default OFF. Same relaunch
+  // contract as the video switch.
+  ipcMain.handle('takeone:setExperimentalImageModels', async (e, root, on) => {
+    try {
+      const r = needRoot(root);
+      const cfg = (await readConfig(r)) || defaultConfig(r);
+      cfg.settings = cfg.settings || {};
+      cfg.settings.experimentalImageModels = !!on;
       await writeConfig(r, cfg);
       return { ok: true };
     } catch (err) { return { ok: false, reason: String(err.message || err) }; }

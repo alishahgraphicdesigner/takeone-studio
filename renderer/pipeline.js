@@ -96,6 +96,7 @@
     renderTools();
     renderQuickGen();
     renderVideoPanel();
+    renderImageModelsPanel();
   }
 
   // M1: Quick Generate lives in the Studio view ALWAYS — not only in the
@@ -401,7 +402,11 @@
       } catch { /* VRAM note optional */ }
       try {
         const st = await window.takeone.toolStates(root);
-        const vs = st && st['video-studio'];
+        // FIX-8: toolStates returns { ok, states } — the old code read
+        // st['video-studio'] off the RESPONSE object, so vs was ALWAYS
+        // undefined and the panel showed "isn't installed yet" forever,
+        // even with the model fully on disk. Read the states map.
+        const vs = st && st.states && st.states['video-studio'];
         if (!expVideo) {
           // M2.6-ENABLE OFF: video stays "Coming soon" — no download
           // offer, no generate, no pack. The old trial path now lives
@@ -442,7 +447,7 @@
               ? window.TakeOneDownloadEstimate.formatDownloadEstimate(videoSizeMB, videoSpeed) : null;
             if (est) estTxt = ` ${est.charAt(0).toUpperCase() + est.slice(1)}. You can pause and resume.`;
           }
-          if (vDl) vDl.innerHTML = `<span>Video Studio isn't installed yet (~34 GB).${estTxt} Trial status: its first real clip on a GPU PC has not run yet — the download below is how that trial happens; the Models page still shows Coming soon until it goes green.${prog}${err}</span><br><button class="btn small" id="videoDlBtn">Download video model</button>`;
+          if (vDl) vDl.innerHTML = `<span>Video Studio isn't installed yet (~34 GB).${estTxt} Trial status: its first real clip on a GPU PC has not run yet — the download below is how that trial happens.${prog}${err}</span><br><button class="btn small" id="videoDlBtn">Download video model</button>`;
           const dlBtn = document.getElementById('videoDlBtn');
           if (dlBtn) dlBtn.addEventListener('click', async () => {
             dlBtn.disabled = true;
@@ -680,6 +685,136 @@
   }
 
 
+  // M3: Image-models bake-off panel — 3 prompts x 3 models, one seed,
+  // one contact sheet. Lives in the Studio view ALWAYS (same lesson as
+  // Quick Generate and Video: renderAll AND renderNoProject both call
+  // it, guarded by #imageModelsPanel). Behind the image-models switch:
+  // OFF reads Coming soon with no pack button enabled; ON + all three
+  // models installed enables the pack. Results land in the Quick
+  // Generate project like the M1 pack's, but the sheet is its OWN file
+  // (image_models_sheet.png) — it never overwrites contact_sheet.png.
+  function renderImageModelsPanel() {
+    if (document.getElementById('imageModelsPanel')) return;
+    const host = $('#studioBody');
+    if (!host) return;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `<div class="quickgen" id="imageModelsPanel" style="margin-top:32px; padding:20px; border:1px solid var(--line); border-radius:12px; background:var(--panel);">
+      <h3 style="margin:0 0 8px;">🧪 Image models bake-off <span class="muted small">(experimental)</span></h3>
+      <p class="muted small" id="imStatusNote" style="margin:0 0 12px;">Checking image models…</p>
+      <p class="muted small" style="margin:0 0 12px;">Same 3 prompts, same seed, 3 models — SDXL-Lightning, Z-Image Turbo, FLUX.2 Klein 4B — side by side on one sheet, so you can judge with your own eyes. The default model does not change: this only compares.</p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:12px 0;">
+        <label class="muted small">Seed <input id="imSeed" placeholder="Random" inputmode="numeric" style="width:90px; padding:6px 8px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:#fff;" /></label>
+        <button class="ghost" id="imPackBtn" disabled>Run image-models pack (3 prompts × 3 models)</button>
+      </div>
+      <div id="imOut" class="muted small"></div>
+    </div>`;
+    host.appendChild(wrap.firstElementChild);
+    const imPackBtn = $('#imPackBtn');
+    const imOut = $('#imOut');
+    const imNote = $('#imStatusNote');
+    let expImageModels = false;
+    let imBusy = false;
+    const MODEL_LABEL = { 'image-studio': 'SDXL-Lightning', 'z-image-turbo': 'Z-Image Turbo', 'flux2-klein-4b': 'FLUX.2 Klein 4B' };
+    const PROMPT_LABEL = ['Portrait', 'Landscape', 'Product'];
+    window.takeone.getConfig().then((c) => {
+      expImageModels = !!(c && c.settings && c.settings.experimentalImageModels);
+      refreshImState();
+    }).catch(() => {});
+    async function refreshImState() {
+      if (!expImageModels) {
+        if (imPackBtn) imPackBtn.disabled = true;
+        if (imNote) imNote.textContent = 'Coming soon. Image models are experimental and switched off — turn on “Experimental: image models” in Settings to try them before their first real images are proven.';
+        return;
+      }
+      try {
+        const st = await window.takeone.toolStates(root);
+        const states = (st && st.states) || {};
+        const missing = ['image-studio', 'z-image-turbo', 'flux2-klein-4b']
+          .filter((id) => !(states[id] && states[id].state === 'installed'))
+          .map((id) => MODEL_LABEL[id] || id);
+        if (missing.length) {
+          if (imPackBtn) imPackBtn.disabled = true;
+          if (imNote) imNote.textContent = `Not installed yet: ${missing.join(', ')}. Open Models and download them first.`;
+        } else {
+          if (imPackBtn) imPackBtn.disabled = false;
+          if (imNote) imNote.textContent = 'All 3 models installed. The pack renders 9 images (3 prompts × 3 models, one seed) and saves one comparison sheet.';
+        }
+      } catch { /* state optional */ }
+    }
+    async function imPollOne(pid, promptText, cancelState, statusEl, label) {
+      for (let i = 0; i < 150; i++) {
+        await new Promise((res) => setTimeout(res, 5000));
+        if (cancelState.cancelled) return null;
+        const f = await window.takeone.comfyFetchOutput(root, pid, promptText);
+        if (f && f.ok) return f;
+        if (f && !f.notFinished) return { __error: f.error || 'failed' };
+        statusEl.textContent = `${label} ${Math.floor((i + 1) * 5 / 60)}m ${((i + 1) * 5) % 60}s`;
+      }
+      return { __timeout: true };
+    }
+    refreshImState();
+    if (imPackBtn) imPackBtn.addEventListener('click', async () => {
+      if (imBusy) return;
+      imPackBtn.disabled = true;
+      imBusy = true;
+      const cancelState = { cancelled: false };
+      try {
+        imOut.innerHTML = '<div id="imStatus"><span id="imStatusText">Starting the engine for the image-models pack…</span> <span id="imStatusBtn"></span></div><div id="imCards"></div>';
+        const statusEl = document.getElementById('imStatusText');
+        document.getElementById('imStatusBtn').innerHTML = '<button class="btn small ghost2" id="imPackCancel">Cancel</button>';
+        document.getElementById('imPackCancel').addEventListener('click', async () => {
+          cancelState.cancelled = true;
+          try { await window.takeone.comfyInterrupt(); } catch { /* best effort */ }
+        });
+        const seedRaw = ((($('#imSeed') || {}).value || '').trim());
+        const r = await window.takeone.comfyGenerateImageModelsPack(root, { seed: seedRaw });
+        if (!r.ok) {
+          imOut.textContent = 'Error: ' + (r.error || r.reason || 'failed');
+          return;
+        }
+        statusEl.textContent = `Image-models pack queued — 9 images, one seed (${r.seed}). This takes a few minutes.`;
+        const results = [];
+        for (let ji = 0; ji < r.jobs.length; ji++) {
+          const job = r.jobs[ji];
+          if (cancelState.cancelled) { statusEl.textContent = 'Cancelled.'; return; }
+          const f = await imPollOne(job.promptId, job.prompt, cancelState, statusEl, `Image-models pack ${ji + 1}/9 —`);
+          if (cancelState.cancelled) { statusEl.textContent = 'Cancelled.'; return; }
+          results.push(f ? { ...job, dataUrl: f.dataUrl, path: f.path } : { ...job, dataUrl: null });
+          statusEl.textContent = `Image-models pack: ${ji + 1}/9 done.`;
+        }
+        // Rows = prompts, columns = models (job order is prompt-major).
+        const canvas = document.createElement('canvas');
+        await window.TakeOneContactSheet.drawSheet(canvas,
+          results.map((res) => ({ image: res.dataUrl || null, label: `${MODEL_LABEL[res.model] || res.model} · ${PROMPT_LABEL[res.promptIndex] || ''}` })), 3);
+        const sheetUrl = canvas.toDataURL('image/png');
+        const sr = await window.takeone.saveImageModelsSheet(root, sheetUrl);
+        const cards = document.getElementById('imCards');
+        if (cards) {
+          const el = document.createElement('div');
+          el.style.cssText = 'margin-top:12px; padding:12px; border:1px solid var(--line); border-radius:12px;';
+          el.innerHTML = `<img src="${esc(sheetUrl)}" style="max-width:100%; border-radius:8px;" />` +
+            `<div style="margin-top:8px;"><b>Image-models pack contact sheet</b> <span class="muted small">${sr && sr.ok ? esc(sr.path) : 'could not be saved — the sheet above is still yours to screenshot'}</span></div>` +
+            (sr && sr.ok ? `<button class="btn small" id="imSheetFolder">Open folder</button>` : '');
+          cards.appendChild(el);
+          const sf = document.getElementById('imSheetFolder');
+          if (sf) sf.addEventListener('click', () => window.takeone.showInFolder(sr.path));
+        }
+        const failed = results.filter((x) => !x.dataUrl).length;
+        statusEl.textContent = failed
+          ? `Image-models pack done — ${9 - failed}/9 saved. ${failed} failed (plain errors were shown while polling).`
+          : 'Image-models pack done — 9/9 saved to the Library project “Quick Generate”.';
+      } catch (e) {
+        if (imOut) imOut.textContent = 'Error: ' + (e.message || e);
+      } finally {
+        imPackBtn.disabled = false;
+        imBusy = false;
+        const bs = document.getElementById('imStatusBtn');
+        if (bs) bs.innerHTML = ''; // FIX-6: no dead Cancel after the pack ends
+        refreshImState();
+      }
+    });
+  }
+
   // ------------------------------------------------------- empty state
   // Honest and alive: no fake projects, no dead ends, no black screens.
   // If no AI tools are installed yet, the first CTA leads to Models —
@@ -778,6 +913,7 @@
     $('#npCreate').addEventListener('click', newProjectDialog);
     renderQuickGen();
     renderVideoPanel();
+    renderImageModelsPanel();
     $('#npScript').addEventListener('click', async () => {
       const name = await promptModal('New project', 'Project name');
       if (name === null) return;

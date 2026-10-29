@@ -7,8 +7,8 @@ const {
 } = require('../main.js');
 
 describe('validateCatalog', () => {
-  it('has exactly 21 tools', () => {
-    assert.equal(CATALOG.length, 21);
+  it('has exactly 23 tools', () => {
+    assert.equal(CATALOG.length, 23);
   });
   it('passes its own validation', () => {
     const v = validateCatalog(CATALOG);

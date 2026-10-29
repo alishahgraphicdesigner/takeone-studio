@@ -141,4 +141,48 @@ test('F. cancel leaves no partial/.aria2 in staging — 30 iterations (WO-10)', 
     assert.ok(!has(partial + '.aria2'), `iter ${i}: .aria2 control file remained in staging after cancel`);
   }
 });
+/* FIX-8: HF multi-file job end-to-end against a local server with a fake
+ * small manifest — the download -> installed link for video-studio and
+ * for a second HF tool (vision). The shipped app's panel-installed
+ * branch is proven separately by the ui-audit sparse-seed check (the
+ * shipped catalog's 34 GB manifest cannot be served byte-exact in CI).
+ * A missing/wrong-size file after "done" must read as incomplete with
+ * the file named — the diagnostics' first-mismatch source. */
+const { hfInstalledStatus } = require('../main/hf-install-check.js');
+const hfTool = (id, category, files) => ({ id, installType: 'hf', repo: 'test/' + id, commit: 't1', category, files });
+test('FIX-8: HF job video-studio -> files on disk -> install check complete', async () => {
+  const a = { size: 64 * 1024, seed: 11 }, b = { size: 3 * 1024, seed: 12 };
+  const files = [
+    { path: 'diffusion_pytorch_model-00001-of-00003.safetensors', bytes: a.size, sha256: shaOfPattern(a.size, a.seed) },
+    { path: 'google/umt5-xxl/tokenizer_config.json', bytes: b.size, sha256: shaOfPattern(b.size, b.seed) },
+  ];
+  const { s, root } = await setup({
+    '/test/video-studio/resolve/t1/diffusion_pytorch_model-00001-of-00003.safetensors': a,
+    '/test/video-studio/resolve/t1/google/umt5-xxl/tokenizer_config.json': b,
+  });
+  const m = await mgr(root, s);
+  await m.addHfDownload(hfTool('video-studio', 'video', files));
+  await waitFor(() => m.getState('video-studio').status === 'done', 60000, 'video-studio done');
+  const dir = path.join(root, 'Models', 'video', 'video-studio');
+  assert.strictEqual(fs.statSync(path.join(dir, files[0].path)).size, a.size);
+  assert.strictEqual(fs.statSync(path.join(dir, files[1].path)).size, b.size);
+  const chk = await hfInstalledStatus(dir, files);
+  assert.strictEqual(chk.complete, true, 'install check must pass after a verified download, got ' + chk.bad);
+});
+
+test('FIX-8: HF job vision (second tool) -> install check complete; missing file named', async () => {
+  const a = { size: 32 * 1024, seed: 21 };
+  const files = [{ path: 'model.safetensors', bytes: a.size, sha256: shaOfPattern(a.size, a.seed) }];
+  const { s, root } = await setup({ '/test/vision/resolve/t1/model.safetensors': a });
+  const m = await mgr(root, s);
+  await m.addHfDownload(hfTool('vision', 'analyze', files));
+  await waitFor(() => m.getState('vision').status === 'done', 60000, 'vision done');
+  const dir = path.join(root, 'Models', 'analyze', 'vision');
+  assert.strictEqual((await hfInstalledStatus(dir, files)).complete, true);
+  fs.unlinkSync(path.join(dir, 'model.safetensors'));
+  const chk = await hfInstalledStatus(dir, files);
+  assert.strictEqual(chk.complete, false, 'a deleted file must fail the check');
+  assert.match(chk.bad, /model\.safetensors: missing/);
+});
+
 console.log(IS_REAL ? '[using REAL aria2c: ' + ARIA2C + ']' : '[using the SIMULATOR — harness check only]');

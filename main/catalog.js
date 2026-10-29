@@ -1,5 +1,5 @@
 /* TakeOne Studio 2.2.0 — Phase B: signed model catalog.
- * 21 tools, honest labels. Pure data + validation; exported for unit tests.
+ * 23 tools, honest labels. Pure data + validation; exported for unit tests.
  *
  * Label legend (UI):
  *   "Untested on this PC" — default; flips only after an on-PC smoke test passes.
@@ -76,6 +76,63 @@ const CATALOG = [
     why: 'Lighter image model for smaller GPUs.',
     unavailable: 'Not available yet: image-lite shares image-studio\u2019s SDXL workflow but has no workflow or end-to-end test of its own. Withheld until its own workflow and e2e exist.',
     unavailableUser: 'Coming soon. We\u2019re still making sure this works smoothly on your PC. Nothing for you to do.',
+  },
+  {
+    id: 'z-image-turbo', group: 'Image',
+    friendlyName: 'Z-Image Turbo', technical: 'Z-Image Turbo (bf16) + Qwen3-4B text encoder',
+    installType: 'hf',
+    // M3: experimental image model, behind its OWN switch (Settings >
+    // "Experimental: image models") — not the video switch. Files are
+    // Comfy-Org's ComfyUI repack (split_files) of Tongyi-MAI's
+    // Z-Image-Turbo weights: bf16 diffusion + Qwen3-4B encoder + VAE.
+    // The repack repo at the pinned commit declares apache-2.0 in its
+    // README front-matter, matching the original weights' license.
+    // Quantized variants (int8/nvfp4) and the distill LoRA are NOT
+    // included — the bake-off compares stock bf16 behavior.
+    experimental: 'Experimental: the Z-Image workflow is built and CI-validated, but no real image has rendered on a GPU PC yet. Offered only with Settings > Experimental: image models ON.',
+    experimentalUser: 'Coming soon. Image models are experimental and switched off — turn on “Experimental: image models” in Settings to try them before their first real images are proven.',
+    experimentalSwitch: 'imageModels',
+    repo: 'Comfy-Org/Z-Image-Turbo',
+    commit: '6fc90a3b1b653e935a0d175e260736de25b84df5',
+    files: [
+      { path: 'split_files/diffusion_models/z_image_turbo_bf16.safetensors', bytes: 12309866400, sha256: '2407613050b809ffdff18a4ac99af83ea6b95443ecebdf80e064a79c825574a6' },
+      { path: 'split_files/text_encoders/qwen_3_4b.safetensors', bytes: 8044982048, sha256: '6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a' },
+      { path: 'split_files/vae/ae.safetensors', bytes: 335304388, sha256: 'afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38' },
+    ],
+    url: null, fileName: null, sha256: null,
+    sizeMB: 19731, sizeBytes: 20690152836, vramMB: 16384,
+    license: 'Apache-2.0', licenseNote: 'Free for commercial use. The files are Comfy-Org\u2019s ComfyUI repack of Tongyi-MAI\u2019s Z-Image-Turbo weights; the repack repo at the pinned commit declares apache-2.0, matching the original weights\u2019 license.',
+    category: 'image',
+    why: 'A fast distilled image model — sharp photoreal images in 8 steps. Compare it against Image Studio and FLUX.2 Klein in the image-models pack.',
+  },
+  {
+    id: 'flux2-klein-4b', group: 'Image',
+    friendlyName: 'FLUX.2 Klein 4B', technical: 'FLUX.2 Klein 4B distilled + Qwen3-4B text encoder',
+    installType: 'hf',
+    // M3: experimental image model, same switch as Z-Image Turbo.
+    // Files are Comfy-Org's ComfyUI repack (split_files) of Black
+    // Forest Labs' FLUX.2-klein-4B DISTILLED weights. Only the 4B
+    // distilled file is listed: the 9B, 9B KV and dev variants are
+    // FLUX Non-Commercial and are deliberately NOT in this catalog.
+    // BFL's LICENSE.md at the klein pin is the full Apache-2.0 text.
+    // The Qwen3 encoder file is byte-identical to Z-Image Turbo's
+    // (same LFS oid) — installing either tool provides it, and a
+    // second copy resolves to the same bytes.
+    experimental: 'Experimental: the FLUX.2 Klein workflow is built and CI-validated, but no real image has rendered on a GPU PC yet. Offered only with Settings > Experimental: image models ON.',
+    experimentalUser: 'Coming soon. Image models are experimental and switched off — turn on “Experimental: image models” in Settings to try them before their first real images are proven.',
+    experimentalSwitch: 'imageModels',
+    repo: 'Comfy-Org/Flux-2-Klein-4B',
+    commit: '5b3abca5c0dc1ecd4eaf3340868d09063fc1c965',
+    files: [
+      { path: 'split_files/diffusion_models/flux-2-klein-4b.safetensors', bytes: 7751105712, sha256: 'ec3d4e733a771f61c052fb4856c48b336c55eaf2c65487c2a1faeb9bbda7a343' },
+      { path: 'split_files/text_encoders/qwen_3_4b.safetensors', bytes: 8044982048, sha256: '6c671498573ac2f7a5501502ccce8d2b08ea6ca2f661c458e708f36b36edfc5a' },
+      { path: 'split_files/vae/flux2-vae.safetensors', bytes: 336211292, sha256: '868fe7b343cc8f3a19dbcfcafbc3d5f888802be3f89bd81b65b3621a066ce8f3' },
+    ],
+    url: null, fileName: null, sha256: null,
+    sizeMB: 15384, sizeBytes: 16132299052, vramMB: 13312,
+    license: 'Apache-2.0', licenseNote: 'Free for commercial use. Black Forest Labs\u2019 LICENSE.md at the FLUX.2-klein-4B pin is the full Apache-2.0 text; the files here are Comfy-Org\u2019s ComfyUI repack of those weights (4B distilled only — the 9B and dev variants are non-commercial and are NOT in this catalog).',
+    category: 'image',
+    why: 'Black Forest Labs\u2019 small distilled model — 4 steps, strong photoreal quality. Compare it against Image Studio and Z-Image Turbo in the image-models pack.',
   },
   {
     id: 'video-studio', group: 'Video',
@@ -497,6 +554,11 @@ function validateCatalog(cat) {
  *    experimentalUser text (the Coming-soon box the user already knows).
  *  - tool.experimental && experimentalOn -> offered (null).
  *  - neither flag -> offered (null).
+ * M3: experimentalOn may be a boolean (legacy: the video switch only)
+ * or an object of switches { video, imageModels }. A tool names its
+ * switch via experimentalSwitch (default 'video'); an unknown or
+ * missing key reads as OFF, never ON — so turning on video can never
+ * silently offer the image models, or vice versa.
  */
 function effectiveAvailability(tool, experimentalOn) {
   if (!tool) return null;
@@ -504,7 +566,11 @@ function effectiveAvailability(tool, experimentalOn) {
     return { unavailable: tool.unavailable, unavailableUser: tool.unavailableUser || null };
   }
   if (typeof tool.experimental === 'string' && tool.experimental) {
-    if (experimentalOn) return null;
+    const key = tool.experimentalSwitch || 'video';
+    let on = false;
+    if (experimentalOn && typeof experimentalOn === 'object') on = !!experimentalOn[key];
+    else on = !!experimentalOn && key === 'video';
+    if (on) return null;
     return { unavailable: tool.experimental, unavailableUser: tool.experimentalUser || null };
   }
   return null;

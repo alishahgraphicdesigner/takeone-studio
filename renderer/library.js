@@ -114,27 +114,37 @@
     $$('[data-delproj]').forEach((b) => b.addEventListener('click', async () => {
       const p = projects.find((x) => x.id === b.dataset.delproj);
       if (!confirm(`Move "${p ? p.name : 'this project'}" to Trash? You can restore it within 30 days.`)) return;
-      const r = await window.takeone.trashProject(root, b.dataset.delproj);
-      if (!r.ok) notice(r.reason || 'Could not delete.');
-      if (openId === b.dataset.delproj) openId = null;
-      render();
+      // FIX-7: render in finally — Library AND Trash re-read from disk
+      // even if the IPC call rejects or the notice throws, so the view
+      // can never go stale after a Trash action.
+      try {
+        const r = await window.takeone.trashProject(root, b.dataset.delproj);
+        if (!r.ok) notice(r.reason || 'Could not delete.');
+      } finally {
+        if (openId === b.dataset.delproj) openId = null;
+        render();
+      }
     }));
     $$('[data-restore]').forEach((b) => b.addEventListener('click', async () => {
-      const r = await window.takeone.restoreFromTrash(root, b.dataset.restore, b.dataset.kind);
-      if (!r.ok) notice(r.reason || 'Could not restore.');
-      render();
+      try {
+        const r = await window.takeone.restoreFromTrash(root, b.dataset.restore, b.dataset.kind);
+        if (!r.ok) notice(r.reason || 'Could not restore.');
+      } finally { render(); }
     }));
     $$('[data-forget]').forEach((b) => b.addEventListener('click', async () => {
       if (!confirm('Delete forever? This cannot be undone.')) return;
-      const r = await window.takeone.deleteForever(root, b.dataset.forget, b.dataset.kind);
-      if (!r.ok) notice(r.reason || 'Could not delete.');
-      render();
+      try {
+        const r = await window.takeone.deleteForever(root, b.dataset.forget, b.dataset.kind);
+        if (!r.ok) notice(r.reason || 'Could not delete.');
+      } finally { render(); }
     }));
     const te = $('#trashEmpty');
     if (te) te.addEventListener('click', async () => {
       if (!confirm('Empty the entire Trash? This cannot be undone.')) return;
-      await window.takeone.emptyTrash(root);
-      render();
+      try {
+        const r = await window.takeone.emptyTrash(root);
+        if (r && !r.ok) notice(r.reason || 'Could not empty Trash.');
+      } finally { render(); }
     });
   }
 

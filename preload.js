@@ -44,6 +44,9 @@ contextBridge.exposeInMainWorld('takeone', {
   // M1: Ali pack, contact sheet, per-image actions.
   comfyGeneratePack: (root, params) => ipcRenderer.invoke('takeone:comfyGeneratePack', root, params),
   saveContactSheet: (root, dataUrl) => ipcRenderer.invoke('takeone:saveContactSheet', root, dataUrl),
+  // M3: image-models Ali pack (3 prompts x 3 models) + its own sheet file.
+  comfyGenerateImageModelsPack: (root, params) => ipcRenderer.invoke('takeone:comfyGenerateImageModelsPack', root, params),
+  saveImageModelsSheet: (root, dataUrl) => ipcRenderer.invoke('takeone:saveImageModelsSheet', root, dataUrl),
   copyText: (text) => ipcRenderer.invoke('takeone:copyText', text),
   deleteQuickImage: (root, imagePath) => ipcRenderer.invoke('takeone:deleteQuickImage', root, imagePath),
   comfyHistory: (promptId) => ipcRenderer.invoke('takeone:comfyHistory', promptId),
@@ -104,6 +107,8 @@ contextBridge.exposeInMainWorld('takeone', {
   addTaste: (root, type, text) => ipcRenderer.invoke('takeone:addTaste', root, type, text),
   setNiche: (root, niche) => ipcRenderer.invoke('takeone:setNiche', root, niche),
   setExperimentalVideo: (root, on) => ipcRenderer.invoke('takeone:setExperimentalVideo', root, on),
+  // M3: the image-models switch (separate from video).
+  setExperimentalImageModels: (root, on) => ipcRenderer.invoke('takeone:setExperimentalImageModels', root, on),
   removeTaste: (root, id) => ipcRenderer.invoke('takeone:removeTaste', root, id),
   updateTaste: (root, id, text) => ipcRenderer.invoke('takeone:updateTaste', root, id, text),
 });

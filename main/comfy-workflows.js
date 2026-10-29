@@ -200,6 +200,112 @@ function wanVideo({
 }
 
 /**
+ * M3: Z-Image Turbo text-to-image on the PINNED ComfyUI commit's
+ * NATIVE nodes. Node-for-node from Comfy-Org's official template
+ * (templates/image_z_image_turbo.json): UNETLoader (bf16) +
+ * CLIPLoader (Qwen3-4B, type lumina2 — the pinned nodes.py CLIPLoader
+ * type list contains lumina2) + VAELoader (ae) + CLIPTextEncode +
+ * ConditioningZeroOut (the negative: distilled models take no negative
+ * text, so the positive conditioning itself is zeroed, exactly as the
+ * template does) + EmptySD3LatentImage + ModelSamplingAuraFlow
+ * (shift 3) + KSampler (8 steps, cfg 1, res_multistep, simple).
+ *
+ * File NAMES, not paths: ComfyUI resolves them through
+ * extra_model_paths (recursive search over Models/image — see
+ * engine.js writeModelPaths). The Qwen3 encoder name is shared with
+ * FLUX.2 Klein (same bytes); whichever tool is installed provides it.
+ */
+function zImage({ unet, clip, vae, positive, width = 1024, height = 1024, seed, steps = 8, cfg = 1 }) {
+  const s = seed ?? Math.floor(Math.random() * 1000000000);
+  return {
+    '1': { class_type: 'UNETLoader', inputs: { unet_name: unet, weight_dtype: 'default' } },
+    '2': { class_type: 'CLIPLoader', inputs: { clip_name: clip, type: 'lumina2', device: 'default' } },
+    '3': { class_type: 'VAELoader', inputs: { vae_name: vae } },
+    '4': { class_type: 'CLIPTextEncode', inputs: { text: positive, clip: ['2', 0] } },
+    '5': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
+    '6': { class_type: 'EmptySD3LatentImage', inputs: { width, height, batch_size: 1 } },
+    '7': { class_type: 'ModelSamplingAuraFlow', inputs: { model: ['1', 0], shift: 3 } },
+    '8': {
+      class_type: 'KSampler',
+      inputs: {
+        model: ['7', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0],
+        seed: s, steps, cfg, sampler_name: 'res_multistep', scheduler: 'simple', denoise: 1.0,
+      },
+    },
+    '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['3', 0] } },
+    '10': { class_type: 'SaveImage', inputs: { images: ['9', 0], filename_prefix: 'takeone' } },
+  };
+}
+
+/**
+ * M3: FLUX.2 Klein 4B DISTILLED text-to-image on the PINNED ComfyUI
+ * commit's NATIVE nodes. Node-for-node from Comfy-Org's official
+ * template subgraph "Text to Image (FLUX.2 Klein 4B Distilled)"
+ * (templates/image_flux2_klein_text_to_image.json): UNETLoader
+ * (distilled 4b — NOT the base file) + CLIPLoader (Qwen3-4B, type
+ * flux2 — the pinned nodes.py CLIPLoader type list contains flux2) +
+ * VAELoader (flux2-vae) + CLIPTextEncode + ConditioningZeroOut
+ * (negative, same distilled-model rule as Z-Image) +
+ * EmptyFlux2LatentImage + RandomNoise + CFGGuider (cfg 1) +
+ * KSamplerSelect (euler) + Flux2Scheduler (4 steps) +
+ * SamplerCustomAdvanced + VAEDecode + SaveImage.
+ */
+function fluxKlein({ unet, clip, vae, positive, width = 1024, height = 1024, seed, steps = 4, cfg = 1 }) {
+  const s = seed ?? Math.floor(Math.random() * 1000000000);
+  return {
+    '1': { class_type: 'UNETLoader', inputs: { unet_name: unet, weight_dtype: 'default' } },
+    '2': { class_type: 'CLIPLoader', inputs: { clip_name: clip, type: 'flux2', device: 'default' } },
+    '3': { class_type: 'VAELoader', inputs: { vae_name: vae } },
+    '4': { class_type: 'CLIPTextEncode', inputs: { text: positive, clip: ['2', 0] } },
+    '5': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
+    '6': { class_type: 'EmptyFlux2LatentImage', inputs: { width, height, batch_size: 1 } },
+    '7': { class_type: 'RandomNoise', inputs: { noise_seed: s } },
+    '8': { class_type: 'CFGGuider', inputs: { model: ['1', 0], positive: ['4', 0], negative: ['5', 0], cfg } },
+    '9': { class_type: 'KSamplerSelect', inputs: { sampler_name: 'euler' } },
+    '10': { class_type: 'Flux2Scheduler', inputs: { steps, width, height } },
+    '11': {
+      class_type: 'SamplerCustomAdvanced',
+      inputs: { noise: ['7', 0], guider: ['8', 0], sampler: ['9', 0], sigmas: ['10', 0], latent_image: ['6', 0] },
+    },
+    '12': { class_type: 'VAEDecode', inputs: { samples: ['11', 0], vae: ['3', 0] } },
+    '13': { class_type: 'SaveImage', inputs: { images: ['12', 0], filename_prefix: 'takeone' } },
+  };
+}
+
+/** M3: loader file names per experimental image model (bare names —
+ * ComfyUI resolves them through extra_model_paths, recursive). */
+const IMAGE_MODEL_FILES = {
+  'z-image-turbo': { unet: 'z_image_turbo_bf16.safetensors', clip: 'qwen_3_4b.safetensors', clipType: 'lumina2', vae: 'ae.safetensors' },
+  'flux2-klein-4b': { unet: 'flux-2-klein-4b.safetensors', clip: 'qwen_3_4b.safetensors', clipType: 'flux2', vae: 'flux2-vae.safetensors' },
+};
+
+/**
+ * M3: the image-models Ali pack — 3 prompts x 3 models, ONE seed.
+ * The prompts are DELIBERATELY the M1 Ali pack prompts (portrait,
+ * landscape, product shot): same prompts, same seed discipline, so the
+ * sheet compares models on identical luck AND stays comparable to the
+ * M1 sheet. All 9 at 1024x1024 (the bake-off is about the model, not
+ * the aspect). The SDXL leg runs the Fast preset (4 steps, cfg 1) —
+ * the app's current default behavior — so the comparison is against
+ * what Ali already has, not a tuned variant.
+ */
+const IMAGE_MODELS_PACK_MODELS = ['image-studio', 'z-image-turbo', 'flux2-klein-4b'];
+const IMAGE_MODELS_PACK_MODEL_LABELS = {
+  'image-studio': 'SDXL-Lightning',
+  'z-image-turbo': 'Z-Image Turbo',
+  'flux2-klein-4b': 'FLUX.2 Klein 4B',
+};
+function buildImageModelsPackJobs(seed) {
+  const jobs = [];
+  for (let pi = 0; pi < ALI_PACK_PROMPTS.length; pi++) {
+    for (const model of IMAGE_MODELS_PACK_MODELS) {
+      jobs.push({ prompt: ALI_PACK_PROMPTS[pi], promptIndex: pi, model, width: 1024, height: 1024, seed });
+    }
+  }
+  return jobs;
+}
+
+/**
  * M2.6: the video Ali pack — 2 prompts x 2 settings, short clips, ONE
  * seed, so Ali can compare settings on identical luck AND compare
  * prompt 1 side-by-side with the first render ever done on his PC
@@ -235,6 +341,8 @@ module.exports = {
   sdxlTxt2Img, sdxlLightningTxt2Img,
   ASPECT_DIMS, aspectDims, DEFAULT_NEGATIVE, PRESETS, presetParams,
   ALI_PACK_PROMPTS, ALI_PACK_SETTINGS, buildAliPackJobs,
+  zImage, fluxKlein, IMAGE_MODEL_FILES,
+  IMAGE_MODELS_PACK_MODELS, IMAGE_MODELS_PACK_MODEL_LABELS, buildImageModelsPackJobs,
   VIDEO_RESOLUTIONS, videoDims, VIDEO_LENGTHS, videoFrames, VIDEO_DEFAULTS,
   DEFAULT_VIDEO_NEGATIVE, wanVideo,
   VIDEO_ALI_PACK_PROMPTS, VIDEO_ALI_PACK_SETTINGS, buildVideoAliPackJobs,

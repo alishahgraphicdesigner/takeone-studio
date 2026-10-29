@@ -54,7 +54,7 @@
     },
     "afterPack": "./build/after-pack.js"
   },
-  "description": "TakeOne Studio \u2014 the AI film studio that knows you. Local, private, one-time purchase.",
+  "description": "TakeOne Studio — the AI film studio that knows you. Local, private, one-time purchase.",
   "license": "UNLICENSED",
   "main": "main.js",
   "name": "takeone-studio",
@@ -64,7 +64,7 @@
     "start": "electron .",
     "test": "node --test --test-timeout=120000 test/*.test.js"
   },
-  "version": "2.2.22",
+  "version": "2.2.23",
   "devDependencies": {
     "electron": "^38.8.6",
     "electron-builder": "^26.15.3",

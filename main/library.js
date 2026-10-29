@@ -423,9 +423,24 @@ async function restoreFromTrash(root, trashName, kind) {
   if (kind === 'project') {
     const projectId = trashName.split('__')[0];
     let dest = path.join(projectsDir(root), projectId);
-    if (fs.existsSync(dest)) dest = path.join(projectsDir(root), `${projectId}-restored-${Date.now()}`);
+    // FIX-7: conflict path. The old code renamed to <id>-restored-<ts>
+    // but left doc.id = <id> inside project.json, so listProjects
+    // reported the ORIGINAL id for a folder that no longer has that
+    // name — every later op (trash, assets, open) addressed the wrong
+    // folder and failed with 'Project not found'. A restored project
+    // is now re-identified: its doc.id is rewritten to the folder it
+    // actually lives in, so Library, trash and assets all agree.
+    const conflicted = fs.existsSync(dest);
+    if (conflicted) dest = path.join(projectsDir(root), `${projectId}-restored-${Date.now()}`);
     await fsp.mkdir(projectsDir(root), { recursive: true });
     await fsp.rename(src, dest);
+    if (conflicted) {
+      try {
+        const doc = JSON.parse(await fsp.readFile(path.join(dest, 'project.json'), 'utf8'));
+        doc.id = path.basename(dest);
+        await writeProjectDoc(root, doc);
+      } catch { /* unreadable doc: folder is back; Library skips it as before */ }
+    }
     return { ok: true, projectId: path.basename(dest) };
   }
   // asset: "<projectId>__<rel-with-__>__<ts>"

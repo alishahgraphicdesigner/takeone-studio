@@ -362,7 +362,14 @@ async function shippedPythonVersion(root, runExec) {
  *  find Wan2.2_VAE.pth and models_t5_umt5-xxl-enc-bf16.pth. The yaml
  *  parser splits a value on newlines, so the vae value uses a literal
  *  block scalar (|) to carry both paths; diffusion_models already
- *  pointed at Models/video (recursive search finds the snapshot dir). */
+ *  pointed at Models/video (recursive search finds the snapshot dir).
+ *  M3: the experimental image models live in Models/image/<tool-id>/
+ *  (same snapshot layout), so diffusion_models, text_encoders and vae
+ *  ALSO point at Models/image — UNETLoader, CLIPLoader and VAELoader
+ *  then find z_image_turbo_bf16 / flux-2-klein-4b / qwen_3_4b / ae /
+ *  flux2-vae by bare name. Additive only: every M2 path stays, so the
+ *  e2e-video extra-path checks (a Models/video line per key) still
+ *  pass unchanged. */
 async function writeModelPaths(root) {
   const er = engineRoot(root);
   const M = (c) => path.join(root, 'Models', c);
@@ -371,12 +378,17 @@ async function writeModelPaths(root) {
 comfyui:
   base_path: ${er}
   checkpoints: ${M('image')}
-  diffusion_models: ${M('video')}
+  diffusion_models: |
+    ${M('video')}
+    ${M('image')}
   loras: ${path.join(M('image'), 'loras')}
   vae: |
     ${path.join(M('image'), 'vae')}
     ${M('video')}
-  text_encoders: ${M('video')}
+    ${M('image')}
+  text_encoders: |
+    ${M('video')}
+    ${M('image')}
   embeddings: ${path.join(M('image'), 'embeddings')}
   controlnet: ${path.join(M('image'), 'controlnet')}
   upscale_models: ${M('fix')}

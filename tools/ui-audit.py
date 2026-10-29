@@ -176,6 +176,111 @@ def seed_library(work):
     return home, root
 
 
+def check_fix7_trash(page, failures):
+    """FIX-7 trash flow through REAL IPC + REAL clicks, on a live-created
+    project (never seeded). create -> trash -> Restore click -> card
+    back; delete-forever click; empty-trash click; seeded project
+    trash -> Restore click -> card back WITH its thumbnail. Confirm
+    dialogs are auto-accepted. Any harness error fails the audit."""
+    try:
+        page.on("dialog", lambda dialog: dialog.accept())
+
+        created = page.evaluate("""async () => {
+          const cfg = await window.takeone.getConfig();
+          return window.takeone.createProject(cfg.storageRoot, 'Audit Trash Project');
+        }""")
+        if not (created and created.get('ok')):
+            failures.append(f"FIX-7 trash: createProject failed: {created}")
+            return
+        tid = created['project']['id']
+
+        def show_library():
+            page.click('.railbtn[data-view="library"]')
+            page.wait_for_timeout(800)
+
+        def trash_rows():
+            return page.evaluate("() => [...document.querySelectorAll('.trashrow')].map((r) => r.innerText)")
+
+        def proj_names():
+            return page.evaluate("() => [...document.querySelectorAll('.projcard')].map((c) => c.innerText)")
+
+        tr = page.evaluate("""async (tid) => {
+          const cfg = await window.takeone.getConfig();
+          return window.takeone.trashProject(cfg.storageRoot, tid);
+        }""", tid)
+        if not (tr and tr.get('ok')):
+            failures.append(f"FIX-7 trash: trashProject failed: {tr}")
+            return
+        show_library()
+        if not any('Audit Trash Project' in r for r in trash_rows()):
+            failures.append(f"FIX-7 trash: trash row missing after trash: {trash_rows()}")
+            return
+        page.locator(".trashrow", has_text="Audit Trash Project").locator("[data-restore]").click()
+        page.wait_for_timeout(800)
+        if not any('Audit Trash Project' in n for n in proj_names()) or any('Audit Trash Project' in r for r in trash_rows()):
+            failures.append(f"FIX-7 trash: Restore click did not bring the card back / trash row stayed: names={proj_names()} rows={trash_rows()}")
+            return
+        print("FIX-7 trash: OK (create -> trash -> Restore click -> card back, trash row gone)")
+
+        # Delete forever (click) + empty trash (click).
+        tr2 = page.evaluate("""async (tid) => {
+          const cfg = await window.takeone.getConfig();
+          return window.takeone.trashProject(cfg.storageRoot, tid);
+        }""", tid)
+        if not (tr2 and tr2.get('ok')):
+            failures.append(f"FIX-7 trash: re-trash for delete-forever failed: {tr2}")
+            return
+        show_library()
+        page.locator(".trashrow", has_text="Audit Trash Project").locator("[data-forget]").click()
+        page.wait_for_timeout(800)
+        if any('Audit Trash Project' in r for r in trash_rows()):
+            failures.append(f"FIX-7 trash: delete-forever click left the row: {trash_rows()}")
+            return
+        for name in ('Audit Empty One', 'Audit Empty Two'):
+            c = page.evaluate("""async (name) => {
+              const cfg = await window.takeone.getConfig();
+              return window.takeone.createProject(cfg.storageRoot, name);
+            }""", name)
+            if not (c and c.get('ok')):
+                failures.append(f"FIX-7 trash: create for empty-trash failed: {c}")
+                return
+            page.evaluate("""async (tid) => {
+              const cfg = await window.takeone.getConfig();
+              return window.takeone.trashProject(cfg.storageRoot, tid);
+            }""", c['project']['id'])
+        show_library()
+        if len(trash_rows()) < 2:
+            failures.append(f"FIX-7 trash: expected 2 rows before empty-trash: {trash_rows()}")
+            return
+        page.click('#trashEmpty')
+        page.wait_for_timeout(800)
+        body = page.evaluate("() => document.querySelector('#libraryBody').innerText")
+        if 'Nothing in Trash.' not in body or trash_rows():
+            failures.append(f"FIX-7 trash: empty-trash click did not clear Trash: rows={trash_rows()}")
+            return
+        print("FIX-7 trash: OK (delete-forever click + empty-trash click)")
+
+        # Seeded project (has a real thumbnail): trash -> Restore click
+        # -> card back WITH its thumbnail.
+        tr3 = page.evaluate("""async () => {
+          const cfg = await window.takeone.getConfig();
+          return window.takeone.trashProject(cfg.storageRoot, 'quick-generate-audit');
+        }""")
+        if not (tr3 and tr3.get('ok')):
+            failures.append(f"FIX-7 trash: trash seeded project failed: {tr3}")
+            return
+        show_library()
+        page.locator(".trashrow", has_text="Quick Generate").locator("[data-restore]").click()
+        page.wait_for_timeout(800)
+        thumbs = page.evaluate("() => [...document.querySelectorAll('.projcard')].filter((c) => c.innerText.includes('Quick Generate')).map((c) => !!c.querySelector('.projthumb'))")
+        if not thumbs or not thumbs[0]:
+            failures.append(f"FIX-7 trash: restored seeded card has no thumbnail: {thumbs}")
+            return
+        print("FIX-7 trash: OK (seeded project restored with thumbnail)")
+    except Exception as e:  # noqa: BLE001 — any harness error fails the audit
+        failures.append(f"FIX-7 trash harness error: {e}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
@@ -282,6 +387,13 @@ def main():
                             " return { panel: !!document.querySelector('#videoPanel'),"
                             " promptTextarea: !!p && p.tagName === 'TEXTAREA',"
                             " genBtn: !!g, packBtn: !!k }; }")
+                        # M3: the Image-models bake-off panel lives in
+                        # Studio too — panel + pack button present even
+                        # with the switch OFF (disabled, Coming soon).
+                        extra["imageModels"] = page.evaluate(
+                            "() => { const p = document.querySelector('#imageModelsPanel');"
+                            " const k = document.querySelector('#imPackBtn');"
+                            " return { panel: !!p, packBtn: !!k }; }")
                     if view == "library":
                         extra["thumb"] = page.evaluate(
                             "() => [...document.querySelectorAll('.projthumb')].some((i) => i.naturalWidth > 0)")
@@ -303,6 +415,18 @@ def main():
                         extra["videoSoon"] = page.evaluate(
                             "() => { const c = document.querySelector('.tcard[data-tool=\"video-studio\"]');"
                             " return !!c && c.innerText.includes('Coming soon'); }")
+                        # M3: the two new image-models cards must read
+                        # Coming soon too (their own switch is OFF).
+                        page.wait_for_function(
+                            "() => !!document.querySelector('.tcard[data-tool=\"z-image-turbo\"]')",
+                            timeout=30000)
+                        page.wait_for_function(
+                            "() => !!document.querySelector('.tcard[data-tool=\"flux2-klein-4b\"]')",
+                            timeout=30000)
+                        extra["imageModelsSoon"] = page.evaluate(
+                            "() => { const a = document.querySelector('.tcard[data-tool=\"z-image-turbo\"]');"
+                            " const b = document.querySelector('.tcard[data-tool=\"flux2-klein-4b\"]');"
+                            " return !!a && a.innerText.includes('Coming soon') && !!b && b.innerText.includes('Coming soon'); }")
                         # Round22: the shipped estimate helper must give
                         # the order's example exactly (pure function, run
                         # in the real app — no state change, OFF state
@@ -324,12 +448,18 @@ def main():
                         v = extra["video"]
                         if not (v["panel"] and v["promptTextarea"] and v["genBtn"] and v["packBtn"]):
                             view_fail.append(f"video panel incomplete: {v}")
+                    if view == "studio":
+                        im = extra["imageModels"]
+                        if not (im["panel"] and im["packBtn"]):
+                            view_fail.append(f"image-models panel incomplete: {im}")
                     if view == "library" and not extra["thumb"]:
                         view_fail.append("no Library card thumbnail rendered (naturalWidth 0)")
                     if view == "settings" and not (extra["folderCard"]["merged"] and extra["diagnosticsBtn"]):
                         view_fail.append(f"settings folder cards not merged / diagnostics button missing: {extra}")
                     if view == "models" and not extra["videoSoon"]:
                         view_fail.append(f"models video-studio card is not Coming soon (switch OFF expected): {extra}")
+                    if view == "models" and not extra["imageModelsSoon"]:
+                        view_fail.append(f"models image-models cards are not Coming soon (switch OFF expected): {extra}")
                     if view == "models" and extra["dlEstimate"] != "about 3-4 hours at your speed":
                         view_fail.append(f"models download estimate helper wrong: {extra['dlEstimate']!r}")
                     report[view][label] = {
@@ -367,6 +497,10 @@ def main():
                         print(f"FIX-4 late-project: OK (cards {before} -> {after}, new project listed)")
             except Exception as e:  # noqa: BLE001 — any harness error fails the audit
                 failures.append(f"FIX-4 late-project harness error: {e}")
+            # FIX-7 trash flow (live project + clicks + thumbnail variant).
+            _f7_before = len(failures)
+            check_fix7_trash(page, failures)
+            report["fix7_trash"] = {"ok": len(failures) == _f7_before}
     finally:
         # Kill the whole process group: xvfb-run, Xvfb, AND Electron.
         # (proc.terminate() alone leaves Electron alive on its CDP port.)
@@ -380,6 +514,92 @@ def main():
                 os.killpg(proc.pid, signal.SIGKILL)
             except Exception:
                 pass
+
+    # FIX-8 phase 2 — separate launch: experimental switch ON + a
+    # video-studio that is complete on disk as SPARSE files (exact
+    # manifest sizes, ~0 bytes real). The stat-only install check
+    # passes; the panel must show the installed branch. On unfixed
+    # code this fails: vs was read off the response object, so it was
+    # always undefined and the panel showed "isn't installed yet".
+    _f8_before = len(failures)
+    try:
+        work2 = Path(tempfile.mkdtemp(prefix="ui-audit-fix8-"))
+        home2, root2 = seed_library(work2)
+        cfgp = root2 / "config.json"
+        cfg2 = json.loads(cfgp.read_text(encoding="utf-8"))
+        cfg2["settings"] = {"experimentalVideo": True}
+        cfgp.write_text(json.dumps(cfg2), encoding="utf-8")
+        manifest = json.loads(subprocess.run(
+            ["node", "-e",
+             "const {CATALOG}=require('./main/catalog.js');"
+             "const t=CATALOG.find((x) => x.id === 'video-studio');"
+             "console.log(JSON.stringify(t.files))"],
+            cwd=str(APP_DIR), capture_output=True, text=True, check=True).stdout)
+        vsdir = root2 / "Models" / "video" / "video-studio"
+        for f in manifest:
+            p = vsdir / f["path"]
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "wb") as fh:
+                fh.truncate(f["bytes"])
+        env2 = dict(os.environ, HOME=str(home2), XDG_CONFIG_HOME=str(home2 / ".config"))
+        import socket as _socket
+        with _socket.socket() as _s:
+            _s.bind(("127.0.0.1", 0))
+            port2 = _s.getsockname()[1]
+        proc2 = subprocess.Popen(
+            ["xvfb-run", "-a", str(electron), ".", "--no-sandbox", "--disable-gpu",
+             f"--remote-debugging-port={port2}"],
+            cwd=str(APP_DIR), env=env2, start_new_session=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            if not wait_for_cdp(port2):
+                failures.append("FIX-8 phase 2: Electron CDP port did not come up")
+            else:
+                with sync_playwright() as pw2:
+                    browser2 = pw2.chromium.connect_over_cdp(f"http://localhost:{port2}")
+                    pages2 = []
+                    for _ in range(30):
+                        pages2 = browser2.contexts[0].pages if browser2.contexts else []
+                        if pages2:
+                            break
+                        time.sleep(1)
+                    studio2 = [pg for pg in pages2 if pg.url.endswith("studio.html")]
+                    if not studio2:
+                        failures.append(f"FIX-8 phase 2: no studio page: {[pg.url for pg in pages2]}")
+                    else:
+                        page2 = studio2[-1]
+                        page2.wait_for_function(
+                            "() => document.querySelector('#studioBody') && document.querySelector('#studioBody').innerText.trim().length > 0",
+                            timeout=120000)
+                        page2.click('.railbtn[data-view="studio"]')
+                        page2.wait_for_timeout(1500)
+                        ts2 = page2.evaluate("async () => { const cfg = await window.takeone.getConfig(); return window.takeone.toolStates(cfg.storageRoot); }")
+                        vs2 = (ts2.get("states") or {}).get("video-studio") or {}
+                        dl2 = page2.evaluate("() => (document.querySelector('#videoDl') || {}).innerText || ''")
+                        gen_dis = page2.evaluate("() => !!document.querySelector('#videoGenBtn')?.disabled")
+                        pack_dis = page2.evaluate("() => !!document.querySelector('#videoPackBtn')?.disabled")
+                        if vs2.get("state") != "installed":
+                            failures.append(f"FIX-8 phase 2: toolStates video-studio not installed: {vs2}")
+                        elif "Video Studio is installed" not in dl2 or "isn't installed yet" in dl2:
+                            failures.append(f"FIX-8 phase 2: panel did not show installed branch: {dl2!r}")
+                        elif gen_dis or pack_dis:
+                            failures.append(f"FIX-8 phase 2: video buttons still disabled: gen={gen_dis} pack={pack_dis}")
+                        else:
+                            print("FIX-8 phase 2: OK (sparse video-studio -> toolStates installed -> panel installed branch)")
+        finally:
+            try:
+                import signal
+                os.killpg(proc2.pid, signal.SIGTERM)
+                proc2.wait(timeout=10)
+            except Exception:
+                try:
+                    import signal
+                    os.killpg(proc2.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+    except Exception as e:  # noqa: BLE001 — any harness error fails the audit
+        failures.append(f"FIX-8 phase 2 harness error: {e}")
+    report["fix8_panel"] = {"ok": len(failures) == _f8_before}
 
     # Contact sheet: rows = screens, columns = viewports.
     try:

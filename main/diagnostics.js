@@ -419,6 +419,30 @@ async function engineSection(root, over = {}) {
  * `over` lets tests inject every data source; defaults read the real machine.
  * `over.gpuExec` injects the exec function used by queryGpu.
  */
+/** FIX-8: Video Studio files vs manifest, first mismatch, raw download
+ * record and derived tool state — the four facts that settle "downloaded
+ * but not installed" without asking the user to dig through folders.
+ * Pure formatting; the caller (main.js diagnostics handler) computes
+ * the values, so this file never touches the download manager (and
+ * never triggers the automatic re-queue — diagnostics only reports).
+ */
+function videoStudioSection(vs) {
+  if (!vs) return '(video-studio check not run — open Diagnostics from the running app)';
+  const lines = [];
+  lines.push(`Folder: ${vs.dir || '(unknown)'}`);
+  lines.push(`Tool state: ${vs.toolState || 'unknown'}${vs.toolError ? ' — ' + vs.toolError : ''}`);
+  lines.push(`Download record: ${vs.dlState ? JSON.stringify(vs.dlState) : 'none'}`);
+  const files = vs.files || [];
+  const present = files.filter((f) => f.size !== null && f.size !== undefined && f.size === f.expected).length;
+  lines.push(`Files: ${files.length} in manifest, ${present} match exactly`);
+  lines.push(`First mismatch: ${vs.firstMismatch || 'none — all files match'}`);
+  for (const f of files) {
+    const actual = (f.size === null || f.size === undefined) ? 'missing' : String(f.size);
+    lines.push(`  ${f.path} — ${actual} (expected ${f.expected})${actual === String(f.expected) ? '' : '  <-- MISMATCH'}`);
+  }
+  return lines.join('\n');
+}
+
 async function buildDiagnosticsReport(root, over = {}) {
   const engine = require('./engine.js');
   const d = (k, fn) => (over[k] !== undefined ? over[k] : fn());
@@ -471,6 +495,12 @@ async function buildDiagnosticsReport(root, over = {}) {
   const quickOuts = over.quickOutputs !== undefined ? over.quickOutputs : listQuickOutputs(root);
   // M2: last video outputs (Quick Generate project videos/, newest 5).
   const quickVids = over.quickVideos !== undefined ? over.quickVideos : listQuickVideos(root);
+  // FIX-8: video-studio files vs manifest (per-file sizes, first
+  // mismatch, raw download record, derived tool state). The live
+  // handler passes the computed object as over.videoStudio; tests may
+  // inject the finished string as over.videoStudioSection.
+  const videoStudio = over.videoStudioSection !== undefined ? over.videoStudioSection
+    : videoStudioSection(over.videoStudio);
   const report = [
     'TakeOne Studio diagnostics',
     '===========================',
@@ -485,6 +515,9 @@ async function buildDiagnosticsReport(root, over = {}) {
     '',
     '--- Storage ---',
     storSection,
+    '',
+    '--- Video Studio files ---',
+    videoStudio,
     '',
     `--- App log (current session only, last ${LOG_TAIL_LINES} lines) ---`,
     appLog,
@@ -516,5 +549,6 @@ module.exports = {
   querySecurity, queryDefenderBlocks, queryComfyCheckpoints, listModelFiles,
   lastGenerationLine, listQuickOutputs, listQuickVideos,
   isOneDrivePath, engineSection, storageSection,
+  videoStudioSection,
   LOG_TAIL_LINES, GPU_QUERY_TIMEOUT_MS,
 };
