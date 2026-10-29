@@ -303,6 +303,14 @@ def main():
                         extra["videoSoon"] = page.evaluate(
                             "() => { const c = document.querySelector('.tcard[data-tool=\"video-studio\"]');"
                             " return !!c && c.innerText.includes('Coming soon'); }")
+                        # Round22: the shipped estimate helper must give
+                        # the order's example exactly (pure function, run
+                        # in the real app — no state change, OFF state
+                        # untouched by this check).
+                        extra["dlEstimate"] = page.evaluate(
+                            "() => (window.TakeOneDownloadEstimate"
+                            " ? window.TakeOneDownloadEstimate.formatDownloadEstimate(32617, 22.8)"
+                            " : null)")
                     view_fail = []
                     if checks["clipped"]:
                         view_fail.append(f"clipped text: {checks['clipped'][:5]}")
@@ -322,6 +330,8 @@ def main():
                         view_fail.append(f"settings folder cards not merged / diagnostics button missing: {extra}")
                     if view == "models" and not extra["videoSoon"]:
                         view_fail.append(f"models video-studio card is not Coming soon (switch OFF expected): {extra}")
+                    if view == "models" and extra["dlEstimate"] != "about 3-4 hours at your speed":
+                        view_fail.append(f"models download estimate helper wrong: {extra['dlEstimate']!r}")
                     report[view][label] = {
                         "screenshot": shot.name, "checks": checks, "extra": extra,
                         "failures": view_fail,

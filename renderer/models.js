@@ -245,6 +245,22 @@
     const label = mins < 1 ? 'under a minute' : mins < 60 ? mins + ' min' : Math.round(mins / 60 * 10) / 10 + ' hr';
     return `<span title="At your measured speed of ${SPEED_MBPS} Mbps">≈ ${label} download</span>`;
   }
+  // Video download offer (round22): plain-words time from the MEASURED
+  // speed + the pause/resume truth, on the card itself. Only when the
+  // download is actually offered (not-installed, gated OK, switch ON —
+  // OFF shows Coming soon via unavailableFor and has no Install path).
+  // No measured speed -> no time claim, only the pause/resume note.
+  function videoDlNote(tool, st) {
+    if (tool.id !== 'video-studio') return '';
+    if (st.state !== 'not-installed' || !st.gateOk) return '';
+    if (st.unavailable || tool.unavailable) return '';
+    const est = (typeof window !== 'undefined' && window.TakeOneDownloadEstimate)
+      ? window.TakeOneDownloadEstimate.formatDownloadEstimate(tool.sizeMB, SPEED_MBPS)
+      : null;
+    const time = est ? esc(est.charAt(0).toUpperCase() + est.slice(1)) + '. ' : '';
+    const title = SPEED_MBPS > 0 ? ` title="At your measured speed of ${SPEED_MBPS} Mbps"` : '';
+    return `<div class="dl-note"${title}>${time}You can pause and resume.</div>`;
+  }
   function card(tool) {
     const st0 = STATES[tool.id] || { state: 'not-installed', gateOk: true, deps: [] };
     // WO-12: fall back to the catalog copy's own field if the state predates it.
@@ -259,6 +275,7 @@
       ${unavailableFor(tool, st)}
       ${gateFor(tool, st)}
       ${depsFor(tool, st)}
+      ${videoDlNote(tool, st)}
       <div class="actions">${engineChainFor(tool, st) || actionFor(tool, st)}</div>
     </div>`;
   }

@@ -384,10 +384,13 @@
     let vInstalled = false;
     let vDlPoll = null;
     let expVideo = false; // M2.6-ENABLE: default OFF until the setting loads
+    let videoSpeed = null; // round22: PC-check speed for the download estimate
+    let videoSizeMB = null; // round22: cached catalog sizeMB for video-studio
     // The switch lives in Settings; toggling relaunches the app, so one
     // load here is enough (no live re-read needed).
     window.takeone.getConfig().then((c) => {
       expVideo = !!(c && c.settings && c.settings.experimentalVideo);
+      videoSpeed = (c && c.pcCheck && c.pcCheck.speedMbps) || null;
       refreshVideoState();
     }).catch(() => {});
     async function refreshVideoState() {
@@ -420,7 +423,26 @@
           if (vPackBtn) vPackBtn.disabled = true;
           const prog = vs && vs.state === 'installing' ? ` — downloading… ${Math.round(vs.progress || 0)}%` : '';
           const err = vs && vs.error ? ` <span>Last attempt: ${esc(vs.error)}</span>` : '';
-          if (vDl) vDl.innerHTML = `<span>Video Studio isn't installed yet (~34 GB). Trial status: its first real clip on a GPU PC has not run yet — the download below is how that trial happens; the Models page still shows Coming soon until it goes green.${prog}${err}</span><br><button class="btn small" id="videoDlBtn">Download video model</button>`;
+          // Round22: same plain-words estimate + pause/resume note as the
+          // Models card, but ONLY when a fresh download is on offer
+          // (not-installed/failed) — never mid-download, where a total
+          // time would read as time remaining. Size from the catalog
+          // (cached); no measured speed -> time claim omitted, note kept.
+          const offer = !vs || vs.state === 'not-installed' || vs.state === 'failed';
+          let estTxt = ' You can pause and resume.';
+          if (offer) {
+            if (videoSizeMB == null && window.takeone.catalog) {
+              try {
+                const cat = await window.takeone.catalog();
+                const t = (cat && cat.catalog || []).find((x) => x.id === 'video-studio');
+                if (t) videoSizeMB = t.sizeMB;
+              } catch { /* size stays unknown */ }
+            }
+            const est = (window.TakeOneDownloadEstimate && videoSizeMB)
+              ? window.TakeOneDownloadEstimate.formatDownloadEstimate(videoSizeMB, videoSpeed) : null;
+            if (est) estTxt = ` ${est.charAt(0).toUpperCase() + est.slice(1)}. You can pause and resume.`;
+          }
+          if (vDl) vDl.innerHTML = `<span>Video Studio isn't installed yet (~34 GB).${estTxt} Trial status: its first real clip on a GPU PC has not run yet — the download below is how that trial happens; the Models page still shows Coming soon until it goes green.${prog}${err}</span><br><button class="btn small" id="videoDlBtn">Download video model</button>`;
           const dlBtn = document.getElementById('videoDlBtn');
           if (dlBtn) dlBtn.addEventListener('click', async () => {
             dlBtn.disabled = true;
